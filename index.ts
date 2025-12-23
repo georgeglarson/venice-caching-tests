@@ -1,310 +1,249 @@
 /**
- * Venice API Caching Test Suite
- * 
- * Tests which Venice models actually support prompt caching by:
- * 1. Fetching available models from Venice API
- * 2. Sending a request with cache_control hints
- * 3. Sending the SAME request again
- * 4. Checking if cached_tokens appear in the response
+ * Venice API Caching Test Suite v2.0
  */
 
 const VENICE_API_URL = "https://api.venice.ai/api/v1";
 const VENICE_API_KEY = process.env.VENICE_API_KEY || process.env.API_KEY_VENICE;
 
-interface VeniceModel {
-  id: string;
-  model_spec: {
-    name: string;
-    capabilities: {
-      optimizedForCode?: boolean;
-      supportsFunctionCalling?: boolean;
-    };
+const CONFIG = {
+  runBasicTest: true,
+  runPromptSizeTest: true,
+  runPartialCacheTest: true,
+  runPersistenceTest: true,
+  runTTLTest: false,
+  maxModels: 0,
+  delayBetweenModels: 1000,
+};
+
+const PROMPTS: Record<string, string> = {
+  small: "You are a helpful assistant. Be concise.",
+  medium: "You are an expert software engineer with knowledge of TypeScript, JavaScript, React, Vue, Angular, Node.js, Bun, Python, and databases. You write clean, maintainable code following best practices.",
+  large: "You are an expert software engineer with deep knowledge of TypeScript, JavaScript, React, Vue, Angular, Node.js, Bun, Python, Rust, databases, cloud architecture, DevOps, security, and performance optimization. You write clean, maintainable, well-documented code with proper error handling.",
+  xlarge: "You are an expert software engineer and system architect with comprehensive knowledge. Languages: TypeScript, JavaScript, Python, Rust, Go, Java, Kotlin. Frontend: React, Vue, Angular, Svelte. Backend: Node.js, Bun, Django, FastAPI, Spring Boot, GraphQL, gRPC. Databases: PostgreSQL, MySQL, MongoDB, Redis, Cassandra, DynamoDB, Elasticsearch. Cloud: AWS, GCP, Azure, Terraform, Kubernetes. DevOps: CI/CD, Docker, monitoring, logging, tracing. Security: OWASP, OAuth2, encryption. You write clean, maintainable code following SOLID principles with comprehensive error handling and testing."
+};
+
+interface UsageInfo { promptTokens: number; cachedTokens: number; completionTokens: number; }
+interface TestResult { testName: string; model: string; success: boolean; cachingWorks: boolean; cacheHitRate: number | null; details: Record<string, any>; error?: string; }
+interface ModelResults { model: string; modelName: string; tests: TestResult[]; overallCachingSupport: boolean; bestCacheRate: number; }
+
+async function fetchModels() {
+  console.log("\n📡 Fetching models from Venice API...");
+  const response = await fetch(`${VENICE_API_URL}/models`, { headers: { "Authorization": `Bearer ${VENICE_API_KEY}` } });
+  if (!response.ok) throw new Error(`Failed: ${response.status}`);
+  return (await response.json()).data || [];
+}
+
+function extractUsage(usage: any): UsageInfo {
+  return {
+    promptTokens: usage?.prompt_tokens ?? 0,
+    cachedTokens: usage?.prompt_tokens_details?.cached_tokens ?? usage?.cached_tokens ?? 0,
+    completionTokens: usage?.completion_tokens ?? 0,
   };
-  type: string;
 }
 
-interface CacheTestResult {
-  model: string;
-  modelName: string;
-  success: boolean;
-  firstRequest: {
-    promptTokens: number;
-    cachedTokens: number;
-    completionTokens: number;
-  } | null;
-  secondRequest: {
-    promptTokens: number;
-    cachedTokens: number;
-    completionTokens: number;
-  } | null;
-  cachingWorks: boolean;
-  cacheHitRate: number | null;
-  error?: string;
-}
-
-async function fetchModels(): Promise<VeniceModel[]> {
-  console.log("📡 Fetching models from Venice API...\n");
-  
-  const response = await fetch(`${VENICE_API_URL}/models`, {
-    headers: {
-      "Authorization": `Bearer ${VENICE_API_KEY}`,
-    },
-  });
-  
-  if (!response.ok) {
-    throw new Error(`Failed to fetch models: ${response.status} ${response.statusText}`);
-  }
-  
-  const data = await response.json();
-  return data.data || [];
-}
-
-function extractCachedTokens(usage: any): number {
-  // Try different locations where cached_tokens might appear
-  return (
-    usage?.prompt_tokens_details?.cached_tokens ??
-    usage?.cached_tokens ??
-    0
-  );
-}
-
-async function testModelCaching(modelId: string, modelName: string): Promise<CacheTestResult> {
-  const result: CacheTestResult = {
-    model: modelId,
-    modelName: modelName,
-    success: false,
-    firstRequest: null,
-    secondRequest: null,
-    cachingWorks: false,
-    cacheHitRate: null,
-  };
-  
-  // Large system prompt to make caching worthwhile
-  const systemPrompt = `You are an expert software engineer with deep knowledge of:
-- TypeScript and JavaScript
-- React, Vue, and Angular frameworks  
-- Node.js and Bun runtimes
-- Python and its ecosystem
-- Rust and systems programming
-- Database design (SQL and NoSQL)
-- Cloud architecture (AWS, GCP, Azure)
-- DevOps and CI/CD pipelines
-- Security best practices
-- Performance optimization
-
-You write clean, maintainable, well-documented code.
-You follow best practices and design patterns.
-You consider edge cases and error handling.
-You optimize for readability and performance.
-
-When asked coding questions, provide complete, working examples.
-Explain your reasoning and any trade-offs in your solutions.
-`;
-
-  const userMessage = "Write a simple hello world in TypeScript. Be very brief.";
-
-  const requestBody = {
-    model: modelId,
-    messages: [
-      {
-        role: "system",
-        content: systemPrompt,
-        cache_control: { type: "ephemeral" },
-      },
-      {
-        role: "user", 
-        content: userMessage,
-      },
-    ],
-    max_tokens: 100,
-    venice_parameters: {
-      include_venice_system_prompt: false,
-    },
-  };
-
+async function sendRequest(modelId: string, systemPrompt: string, userMessage: string) {
   try {
-    // First request - should NOT have cache hit
-    console.log(`  📤 First request...`);
-    const response1 = await fetch(`${VENICE_API_URL}/chat/completions`, {
+    const response = await fetch(`${VENICE_API_URL}/chat/completions`, {
       method: "POST",
-      headers: {
-        "Authorization": `Bearer ${VENICE_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(requestBody),
+      headers: { "Authorization": `Bearer ${VENICE_API_KEY}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: modelId,
+        messages: [
+          { role: "system", content: systemPrompt, cache_control: { type: "ephemeral" } },
+          { role: "user", content: userMessage },
+        ],
+        max_tokens: 50,
+        venice_parameters: { include_venice_system_prompt: false },
+      }),
     });
-
-    if (!response1.ok) {
-      const errorText = await response1.text();
-      result.error = `First request failed: ${response1.status} - ${errorText}`;
-      return result;
-    }
-
-    const data1 = await response1.json();
-    const usage1 = data1.usage;
-    
-    result.firstRequest = {
-      promptTokens: usage1?.prompt_tokens ?? 0,
-      cachedTokens: extractCachedTokens(usage1),
-      completionTokens: usage1?.completion_tokens ?? 0,
-    };
-
-    // Small delay between requests
-    await new Promise(resolve => setTimeout(resolve, 500));
-
-    // Second request - SHOULD have cache hit if caching works
-    console.log(`  📤 Second request (checking for cache hit)...`);
-    const response2 = await fetch(`${VENICE_API_URL}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${VENICE_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(requestBody),
-    });
-
-    if (!response2.ok) {
-      const errorText = await response2.text();
-      result.error = `Second request failed: ${response2.status} - ${errorText}`;
-      return result;
-    }
-
-    const data2 = await response2.json();
-    const usage2 = data2.usage;
-    
-    result.secondRequest = {
-      promptTokens: usage2?.prompt_tokens ?? 0,
-      cachedTokens: extractCachedTokens(usage2),
-      completionTokens: usage2?.completion_tokens ?? 0,
-    };
-
-    result.success = true;
-    
-    // Determine if caching actually works
-    const secondCachedTokens = result.secondRequest.cachedTokens;
-    result.cachingWorks = secondCachedTokens > 0;
-    
-    if (result.secondRequest.promptTokens > 0) {
-      result.cacheHitRate = (secondCachedTokens / result.secondRequest.promptTokens) * 100;
-    }
-
-  } catch (error) {
-    result.error = error instanceof Error ? error.message : String(error);
+    if (!response.ok) return { usage: { promptTokens: 0, cachedTokens: 0, completionTokens: 0 }, error: `${response.status}` };
+    return { usage: extractUsage((await response.json()).usage) };
+  } catch (e) {
+    return { usage: { promptTokens: 0, cachedTokens: 0, completionTokens: 0 }, error: String(e) };
   }
+}
 
+async function testBasicCaching(modelId: string): Promise<TestResult> {
+  const result: TestResult = { testName: "basic", model: modelId, success: false, cachingWorks: false, cacheHitRate: null, details: {} };
+  const req1 = await sendRequest(modelId, PROMPTS.large, "Say hello.");
+  if (req1.error) { result.error = req1.error; return result; }
+  result.details.firstRequest = req1.usage;
+  await Bun.sleep(500);
+  const req2 = await sendRequest(modelId, PROMPTS.large, "Say hello.");
+  if (req2.error) { result.error = req2.error; return result; }
+  result.details.secondRequest = req2.usage;
+  result.success = true;
+  result.cachingWorks = req2.usage.cachedTokens > 0;
+  result.cacheHitRate = req2.usage.promptTokens > 0 ? (req2.usage.cachedTokens / req2.usage.promptTokens) * 100 : 0;
   return result;
 }
 
-function printResults(results: CacheTestResult[]) {
-  console.log("\n" + "=".repeat(80));
-  console.log("📊 VENICE CACHING TEST RESULTS");
-  console.log("=".repeat(80) + "\n");
+async function testPromptSizes(modelId: string): Promise<TestResult> {
+  const result: TestResult = { testName: "prompt_sizes", model: modelId, success: false, cachingWorks: false, cacheHitRate: null, details: { sizes: {} } };
+  const sizes = ["small", "medium", "large", "xlarge"];
+  const cacheRates: number[] = [];
+  for (const size of sizes) {
+    const req1 = await sendRequest(modelId, PROMPTS[size], "Hi.");
+    if (req1.error) continue;
+    await Bun.sleep(300);
+    const req2 = await sendRequest(modelId, PROMPTS[size], "Hi.");
+    if (req2.error) continue;
+    const rate = req2.usage.promptTokens > 0 ? (req2.usage.cachedTokens / req2.usage.promptTokens) * 100 : 0;
+    (result.details.sizes as any)[size] = { tokens: req2.usage.promptTokens, cached: req2.usage.cachedTokens, rate: rate.toFixed(1) + "%" };
+    if (req2.usage.cachedTokens > 0) result.cachingWorks = true;
+    cacheRates.push(rate);
+  }
+  result.success = cacheRates.length > 0;
+  result.cacheHitRate = cacheRates.length > 0 ? cacheRates.reduce((a, b) => a + b, 0) / cacheRates.length : null;
+  return result;
+}
 
-  // Summary table
-  console.log("Model                          | Caching | Cache Hit | 1st Cached | 2nd Cached");
-  console.log("-".repeat(80));
+async function testPartialCache(modelId: string): Promise<TestResult> {
+  const result: TestResult = { testName: "partial_cache", model: modelId, success: false, cachingWorks: false, cacheHitRate: null, details: {} };
+  const req1 = await sendRequest(modelId, PROMPTS.large, "What is 2+2?");
+  if (req1.error) { result.error = req1.error; return result; }
+  result.details.firstRequest = req1.usage;
+  await Bun.sleep(500);
+  const req2 = await sendRequest(modelId, PROMPTS.large, "What is 3+3?");
+  if (req2.error) { result.error = req2.error; return result; }
+  result.details.secondRequest = req2.usage;
+  result.success = true;
+  result.cachingWorks = req2.usage.cachedTokens > 0;
+  result.cacheHitRate = req2.usage.promptTokens > 0 ? (req2.usage.cachedTokens / req2.usage.promptTokens) * 100 : 0;
+  result.details.note = "Different user messages - tests system prompt caching";
+  return result;
+}
 
-  for (const r of results) {
-    const modelCol = r.model.padEnd(30).slice(0, 30);
-    const cachingCol = r.cachingWorks ? "✅ YES " : "❌ NO  ";
-    const hitRateCol = r.cacheHitRate !== null 
-      ? `${r.cacheHitRate.toFixed(1)}%`.padEnd(9)
-      : "N/A      ";
-    const first = r.firstRequest?.cachedTokens?.toString() ?? "err";
-    const second = r.secondRequest?.cachedTokens?.toString() ?? "err";
-    
-    console.log(`${modelCol} | ${cachingCol} | ${hitRateCol} | ${first.padEnd(10)} | ${second}`);
-    
-    if (r.error) {
-      console.log(`  ⚠️  Error: ${r.error.slice(0, 60)}...`);
-    }
+async function testPersistence(modelId: string): Promise<TestResult> {
+  const result: TestResult = { testName: "persistence", model: modelId, success: false, cachingWorks: false, cacheHitRate: null, details: { requests: [] } };
+  for (let i = 0; i < 5; i++) {
+    const req = await sendRequest(modelId, PROMPTS.large, "Count.");
+    if (req.error) { result.error = req.error; return result; }
+    (result.details.requests as any[]).push({ attempt: i + 1, ...req.usage });
+    await Bun.sleep(300);
+  }
+  const last = result.details.requests[4] as any;
+  result.success = true;
+  result.cachingWorks = last.cachedTokens > 0;
+  result.cacheHitRate = last.promptTokens > 0 ? (last.cachedTokens / last.promptTokens) * 100 : 0;
+  return result;
+}
+
+async function testTTL(modelId: string): Promise<TestResult> {
+  const result: TestResult = { testName: "ttl", model: modelId, success: false, cachingWorks: false, cacheHitRate: null, details: { delays: {} } };
+  const delays = [1, 5, 10, 30];
+  for (const delay of delays) {
+    const req1 = await sendRequest(modelId, PROMPTS.medium, "Test.");
+    if (req1.error) continue;
+    console.log(`    Waiting ${delay}s...`);
+    await Bun.sleep(delay * 1000);
+    const req2 = await sendRequest(modelId, PROMPTS.medium, "Test.");
+    if (req2.error) continue;
+    const rate = req2.usage.promptTokens > 0 ? (req2.usage.cachedTokens / req2.usage.promptTokens) * 100 : 0;
+    (result.details.delays as any)[`${delay}s`] = { cached: req2.usage.cachedTokens, rate: rate.toFixed(1) + "%" };
+    if (req2.usage.cachedTokens > 0) result.cachingWorks = true;
+  }
+  result.success = true;
+  return result;
+}
+
+async function testModel(model: any): Promise<ModelResults> {
+  const results: ModelResults = { model: model.id, modelName: model.model_spec?.name || model.id, tests: [], overallCachingSupport: false, bestCacheRate: 0 };
+  console.log(`\n🧪 Testing: ${model.id}`);
+
+  if (CONFIG.runBasicTest) {
+    console.log("  📝 Basic caching test...");
+    const r = await testBasicCaching(model.id);
+    results.tests.push(r);
+    console.log(`    ${r.cachingWorks ? "✅" : "❌"} ${r.cacheHitRate?.toFixed(1) ?? 0}% cache hit`);
   }
 
-  // Summary stats
-  const working = results.filter(r => r.cachingWorks).length;
-  const tested = results.filter(r => r.success).length;
-  const failed = results.filter(r => !r.success).length;
-  
-  console.log("\n" + "=".repeat(80));
-  console.log(`📈 SUMMARY: ${working}/${tested} models support caching (${failed} failed to test)`);
-  console.log("=".repeat(80));
-  
-  if (working > 0) {
-    console.log("\n✅ Models WITH caching:");
-    for (const r of results.filter(r => r.cachingWorks)) {
-      console.log(`   - ${r.model} (${r.modelName}) - ${r.cacheHitRate?.toFixed(1)}% cache hit`);
-    }
+  if (CONFIG.runPromptSizeTest) {
+    console.log("  📏 Prompt size test...");
+    const r = await testPromptSizes(model.id);
+    results.tests.push(r);
+    console.log(`    ${r.cachingWorks ? "✅" : "❌"} Avg ${r.cacheHitRate?.toFixed(1) ?? 0}% across sizes`);
   }
-  
-  if (tested - working > 0) {
-    console.log("\n❌ Models WITHOUT caching:");
-    for (const r of results.filter(r => r.success && !r.cachingWorks)) {
-      console.log(`   - ${r.model} (${r.modelName})`);
-    }
+
+  if (CONFIG.runPartialCacheTest) {
+    console.log("  🔀 Partial cache test...");
+    const r = await testPartialCache(model.id);
+    results.tests.push(r);
+    console.log(`    ${r.cachingWorks ? "✅" : "❌"} ${r.cacheHitRate?.toFixed(1) ?? 0}% with different user msg`);
   }
-  
-  if (failed > 0) {
-    console.log("\n⚠️  Models that FAILED to test:");
-    for (const r of results.filter(r => !r.success)) {
-      console.log(`   - ${r.model}: ${r.error?.slice(0, 50)}...`);
-    }
+
+  if (CONFIG.runPersistenceTest) {
+    console.log("  🔄 Persistence test...");
+    const r = await testPersistence(model.id);
+    results.tests.push(r);
+    console.log(`    ${r.cachingWorks ? "✅" : "❌"} ${r.cacheHitRate?.toFixed(1) ?? 0}% after 5 requests`);
   }
+
+  if (CONFIG.runTTLTest) {
+    console.log("  ⏱️ TTL test...");
+    const r = await testTTL(model.id);
+    results.tests.push(r);
+    console.log(`    ${r.cachingWorks ? "✅" : "❌"} Cache persists: ${r.cachingWorks}`);
+  }
+
+  results.overallCachingSupport = results.tests.some(t => t.cachingWorks);
+  results.bestCacheRate = Math.max(...results.tests.map(t => t.cacheHitRate ?? 0));
+  return results;
 }
 
 async function main() {
-  console.log("\n🔬 VENICE CACHING TEST SUITE\n");
-  
-  if (!VENICE_API_KEY) {
-    console.error("❌ Error: VENICE_API_KEY environment variable not set");
-    console.error("   Set it with: export VENICE_API_KEY=your_key_here");
-    process.exit(1);
-  }
-  
-  console.log(`🔑 Using API key: ${VENICE_API_KEY.slice(0, 8)}...${VENICE_API_KEY.slice(-4)}\n`);
+  console.log("\n" + "=".repeat(80));
+  console.log("🔬 VENICE CACHING TEST SUITE v2.0");
+  console.log("=".repeat(80));
 
-  // Fetch models
-  const models = await fetchModels();
-  console.log(`📋 Found ${models.length} total models\n`);
-  
-  // Filter for text models (not image generation)
-  const textModels = models.filter(m => m.type === "text");
-  console.log(`🔤 ${textModels.length} text models to test:\n`);
-  
-  for (const m of textModels) {
-    const codeFlag = m.model_spec?.capabilities?.optimizedForCode ? "[CODE]" : "";
-    console.log(`   - ${m.id} (${m.model_spec?.name || 'Unknown'}) ${codeFlag}`);
-  }
-  console.log("");
+  if (!VENICE_API_KEY) { console.error("❌ Set VENICE_API_KEY env var"); process.exit(1); }
+  console.log(`🔑 API Key: ${VENICE_API_KEY.slice(0, 8)}...${VENICE_API_KEY.slice(-4)}`);
 
-  // Test each model
-  const results: CacheTestResult[] = [];
+  const allModels = await fetchModels();
+  const textModels = allModels.filter((m: any) => m.type === "text");
+  const models = CONFIG.maxModels > 0 ? textModels.slice(0, CONFIG.maxModels) : textModels;
   
-  for (const model of textModels) {
-    console.log(`\n🧪 Testing: ${model.id}`);
-    const result = await testModelCaching(model.id, model.model_spec?.name || model.id);
-    results.push(result);
-    
-    if (result.success) {
-      const icon = result.cachingWorks ? "✅" : "❌";
-      console.log(`  ${icon} Caching: ${result.cachingWorks ? "WORKS" : "NOT DETECTED"}`);
-      if (result.cacheHitRate !== null) {
-        console.log(`  📊 Cache hit rate: ${result.cacheHitRate.toFixed(1)}%`);
-      }
-    } else {
-      console.log(`  ⚠️  Test failed: ${result.error}`);
-    }
-    
-    // Small delay between models to avoid rate limiting
-    await new Promise(resolve => setTimeout(resolve, 1000));
+  console.log(`\n📋 Testing ${models.length} text models`);
+  console.log(`📊 Tests: basic, sizes, partial, persistence${CONFIG.runTTLTest ? ", ttl" : ""}`);
+
+  const allResults: ModelResults[] = [];
+  for (const model of models) {
+    const result = await testModel(model);
+    allResults.push(result);
+    await Bun.sleep(CONFIG.delayBetweenModels);
   }
 
-  // Print final results
-  printResults(results);
-  
-  // Save results to JSON
-  const outputFile = `./results-${new Date().toISOString().split('T')[0]}.json`;
-  await Bun.write(outputFile, JSON.stringify(results, null, 2));
-  console.log(`\n💾 Results saved to: ${outputFile}`);
+  console.log("\n" + "=".repeat(80));
+  console.log("📊 RESULTS SUMMARY");
+  console.log("=".repeat(80));
+
+  const withCaching = allResults.filter(r => r.overallCachingSupport);
+  const withoutCaching = allResults.filter(r => !r.overallCachingSupport);
+
+  console.log(`\n✅ Models WITH caching (${withCaching.length}):`);
+  withCaching.sort((a, b) => b.bestCacheRate - a.bestCacheRate);
+  for (const r of withCaching) console.log(`  - ${r.model} (${r.modelName}) - ${r.bestCacheRate.toFixed(1)}% best`);
+
+  console.log(`\n❌ Models WITHOUT caching (${withoutCaching.length}):`);
+  for (const r of withoutCaching) console.log(`  - ${r.model} (${r.modelName})`);
+
+  console.log("\n" + "-".repeat(100));
+  console.log("Model                          | Basic    | Sizes    | Partial  | Persist  | Overall");
+  console.log("-".repeat(100));
+  for (const r of allResults) {
+    const basic = r.tests.find(t => t.testName === "basic");
+    const sizes = r.tests.find(t => t.testName === "prompt_sizes");
+    const partial = r.tests.find(t => t.testName === "partial_cache");
+    const persist = r.tests.find(t => t.testName === "persistence");
+    const fmt = (t: TestResult | undefined) => t ? (t.cachingWorks ? `${t.cacheHitRate?.toFixed(0)}%`.padStart(5) + " ✅" : "  0% ❌") : "  N/A  ";
+    console.log(`${r.model.padEnd(30)} | ${fmt(basic)} | ${fmt(sizes)} | ${fmt(partial)} | ${fmt(persist)} | ${r.overallCachingSupport ? "✅ YES" : "❌ NO"}`);
+  }
+
+  const date = new Date().toISOString().split("T")[0];
+  const filename = `./results-${date}.json`;
+  await Bun.write(filename, JSON.stringify({ date, config: CONFIG, models: allResults }, null, 2));
+  console.log(`\n💾 Results saved to: ${filename}`);
+  console.log(`\n📈 FINAL: ${withCaching.length}/${allResults.length} models support caching`);
 }
 
 main().catch(console.error);
