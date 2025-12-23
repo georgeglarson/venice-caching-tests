@@ -1,0 +1,13 @@
+{
+  "name": "venice-caching-tests",
+  "version": "1.0.0",
+  "description": "Test suite for Venice.ai prompt caching support",
+  "scripts": {
+    "test": "bun run index.ts",
+    "test:watch": "bun --watch run index.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "latest"
+  }
+}
