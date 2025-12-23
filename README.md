@@ -1,82 +1,60 @@
-# Venice Caching Test Suite v2.0
+# Venice API Caching Test Suite
 
-Comprehensive test suite to discover which Venice.ai models actually support prompt caching.
+Test suite to evaluate prompt caching support across Venice.ai models.
 
-## Test Variations
+## ⚠️ Key Finding: Caching is Inconsistent
 
-This suite runs **5 different tests** per model:
+Testing reveals that Venice's caching behavior is **highly inconsistent** between requests:
 
-| Test | Description | What it reveals |
-|------|-------------|----------------|
-| **Basic** | Send identical requests twice | Does caching work at all? |
-| **Prompt Sizes** | Test small/medium/large/xlarge prompts | Is there a minimum prompt size for caching? |
-| **Partial Cache** | Same system prompt, different user message | Does system prompt cache independently? |
-| **Persistence** | 5 sequential identical requests | Does cache persist across requests? |
-| **TTL** | Delays of 1s, 5s, 10s, 30s between requests | How long does cache last? |
+- Same model + same prompt can show 80%+ cache hit in one run, 0% in the next
+- Results vary significantly even with seconds between identical tests
+- This makes caching unreliable for cost optimization
 
-## Quick Start
+## Models Tested
+
+| Model | Caching Observed | Reliability |
+|-------|-----------------|-------------|
+| grok-41-fast | ✅ Yes | ⚠️ Inconsistent (0-99%) |
+| deepseek-v3.2 | ✅ Sometimes | ⚠️ Inconsistent |
+| zai-org-glm-4.6 | ✅ Sometimes | ⚠️ Inconsistent |
+| zai-org-glm-4.6v | ✅ Yes | Better consistency |
+| kimi-k2-thinking | ⚠️ Rare | Mostly 0% |
+| llama-* | ❌ No | N/A |
+| qwen-* | ❌ No | N/A |
+| claude-* | ❌ No | N/A |
+| gemini-* | ❌ No | N/A |
+
+## Usage
 
 ```bash
-git clone https://github.com/georgeglarson/venice-caching-tests.git
-cd venice-caching-tests
-export VENICE_API_KEY="your-api-key"
+# Install
+bun install
+
+# Set API key
+export VENICE_API_KEY="your-key"
+
+# Run full test suite (all models, slow)
 bun run test
+
+# Run quick test (known caching models only)
+bun run quick-test.ts
 ```
 
-## Configuration
+## Test Types
 
-Edit `CONFIG` in `index.ts` to customize:
+1. **Basic** - Send identical requests, check for cached_tokens
+2. **Prompt Sizes** - Test small/medium/large/xlarge prompts
+3. **Partial Cache** - Same system prompt, different user messages
+4. **Persistence** - Multiple sequential requests
+5. **TTL** - Cache duration over time delays
 
-```typescript
-const CONFIG = {
-  runBasicTest: true,        // Identical request test
-  runPromptSizeTest: true,   // Small/medium/large/xlarge
-  runPartialCacheTest: true, // Different user messages
-  runPersistenceTest: true,  // 5 sequential requests
-  runTTLTest: false,         // Cache TTL (slower)
-  maxModels: 0,              // 0 = all, or limit for quick testing
-  delayBetweenModels: 1000,  // ms between models
-};
-```
+## Conclusion
 
-## Latest Results (2025-12-23)
+Venice caching exists for some models but is not reliable enough for production cost optimization. The `cached_tokens` field appears in responses intermittently, suggesting:
 
-**5 out of 21 models** support caching:
-
-| Model | Cache Hit Rate | Notes |
-|-------|---------------|-------|
-| grok-41-fast | 99.7% | Best overall |
-| zai-org-glm-4.6v | 99.4% | GLM Vision |
-| zai-org-glm-4.6 | 97.6% | GLM Text |
-| deepseek-v3.2 | 82.1% | Good |
-| kimi-k2-thinking | 78.0% | Moonshot |
-
-### Models WITHOUT caching:
-- All LLaMA variants (3.2-3b, 3.3-70b, hermes-3-405b)
-- All Qwen variants (including qwen3-coder-480b)
-- Claude Opus 4.5 (through Venice)
-- Gemini 3 Pro/Flash (through Venice)
-- GPT-5.2, GPT-OSS-120b
-- Mistral 31-24b
-- Google Gemma 3
-- Venice Uncensored
-
-## Output
-
-Results are saved to `results-YYYY-MM-DD.json` with full details:
-- Per-model test results
-- Cache hit rates for each test variation
-- Token counts and timing data
-
-## Why This Matters
-
-Prompt caching can reduce costs by 75-90% for repeated system prompts.
-Knowing which models support it helps optimize API usage and costs.
-
-## Requirements
-
-- [Bun](https://bun.sh) runtime
-- Venice API key with model access
+1. Caching may be load-balanced across servers without shared cache
+2. Cache eviction happens very quickly
+3. Or caching is still in development/testing
 
 ## License
 
