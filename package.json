@@ -1,10 +1,17 @@
 {
   "name": "venice-caching-tests",
-  "version": "1.0.0",
-  "description": "Test suite for Venice.ai prompt caching support",
+  "version": "2.0.0",
+  "description": "Venice.ai prompt caching test suite and health monitor",
   "scripts": {
     "test": "bun run index.ts",
-    "test:watch": "bun --watch run index.ts"
+    "test:watch": "bun --watch run index.ts",
+    "test:quick": "bun run quick-test.ts",
+    "db:init": "bun run src/db/migrations.ts",
+    "server": "bun run server.ts",
+    "server:dev": "bun --watch run server.ts"
+  },
+  "dependencies": {
+    "hono": "^4.0.0"
   },
   "devDependencies": {
     "@types/bun": "latest",

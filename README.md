@@ -1,44 +1,79 @@
-# Venice API Caching Test Suite
+# Venice Caching Health Monitor
 
-Test suite to evaluate prompt caching support across Venice.ai models.
+A comprehensive test suite and web dashboard to monitor Venice.ai prompt caching support across models.
 
-## ⚠️ Key Finding: Caching is Inconsistent
+## Features
 
-Testing reveals that Venice's caching behavior is **highly inconsistent** between requests:
+- **Web Dashboard** - Real-time monitoring at `/cache/`
+- **Cache Microscope** - Live test any model with reproducible curl commands
+- **Historical Sparklines** - Inline trend charts for each model
+- **Provider Filtering** - Filter by Anthropic, OpenAI, Zhipu, DeepSeek, etc.
+- **Scheduled Tests** - Automatic 10-minute testing cycles
+- **Token Usage Tracking** - Monitor token consumption and cache savings
+- **Auto Data Retention** - Automatic cleanup of data older than 30 days
 
-- Same model + same prompt can show 80%+ cache hit in one run, 0% in the next
-- Results vary significantly even with seconds between identical tests
-- This makes caching unreliable for cost optimization
-
-## Models Tested
-
-| Model | Caching Observed | Reliability |
-|-------|-----------------|-------------|
-| grok-41-fast | ✅ Yes | ⚠️ Inconsistent (0-99%) |
-| deepseek-v3.2 | ✅ Sometimes | ⚠️ Inconsistent |
-| zai-org-glm-4.6 | ✅ Sometimes | ⚠️ Inconsistent |
-| zai-org-glm-4.6v | ✅ Yes | Better consistency |
-| kimi-k2-thinking | ⚠️ Rare | Mostly 0% |
-| llama-* | ❌ No | N/A |
-| qwen-* | ❌ No | N/A |
-| claude-* | ❌ No | N/A |
-| gemini-* | ❌ No | N/A |
-
-## Usage
+## Quick Start
 
 ```bash
-# Install
+# Install dependencies
 bun install
 
 # Set API key
 export VENICE_API_KEY="your-key"
 
-# Run full test suite (all models, slow)
-bun run test
+# Start the dashboard
+bun run server.ts
 
-# Run quick test (known caching models only)
-bun run quick-test.ts
+# Open http://localhost:3000/cache/ in your browser
 ```
+
+## Dashboard Features
+
+### Health Overview
+- Overall cache health status badge
+- Quick stats: last run, models tested, caching models, avg rate
+- Auto-refresh with 60s countdown
+
+### Model Table
+- Sortable columns (click headers)
+- Provider badges with color coding
+- Inline sparkline trends (last 10 tests)
+- Click-to-copy model IDs
+- Filter by provider or caching status
+
+### Cache Microscope
+- Live test any model with real API calls
+- Side-by-side model comparison
+- Shows response times and cache speedup
+- Raw JSON evidence for debugging
+- Reproducible curl command for external testing
+
+### Charts
+- Bar chart comparing model performance
+- Line chart showing cache rate trends over time
+
+### Token Usage Stats
+- Total requests, prompt tokens, cached tokens
+- Cache savings percentage
+- Daily token averages
+
+## API Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/cache/api/stats` | Dashboard overview stats |
+| GET | `/cache/api/models` | All models with computed stats |
+| GET | `/cache/api/sparklines` | Recent cache rates for sparklines |
+| GET | `/cache/api/results` | Recent test results |
+| GET | `/cache/api/history` | Historical data for charts |
+| GET | `/cache/api/usage` | Token usage statistics |
+| GET | `/cache/api/logs` | Server logs |
+| GET | `/cache/api/health` | Health check with status |
+| GET | `/cache/api/scheduler` | Scheduler status |
+| POST | `/cache/api/run` | Trigger manual test run |
+| GET | `/cache/api/test/:modelId` | Live test a single model |
+| GET | `/cache/api/compare/:m1/:m2` | Compare two models |
+| GET | `/cache/api/model/:id/history` | Model test history |
 
 ## Test Types
 
@@ -48,13 +83,62 @@ bun run quick-test.ts
 4. **Persistence** - Multiple sequential requests
 5. **TTL** - Cache duration over time delays
 
-## Conclusion
+## Project Structure
 
-Venice caching exists for some models but is not reliable enough for production cost optimization. The `cached_tokens` field appears in responses intermittently, suggesting:
+```
+venice-caching-tests/
+├── src/
+│   ├── core/           # Test logic modules
+│   │   ├── types.ts    # TypeScript interfaces
+│   │   ├── config.ts   # Configuration & prompts
+│   │   ├── api.ts      # Venice API client
+│   │   ├── runner.ts   # Test orchestration
+│   │   ├── logger.ts   # Structured logging
+│   │   └── tests/      # Individual test implementations
+│   ├── db/             # SQLite database layer
+│   │   ├── schema.ts   # Table definitions
+│   │   ├── migrations.ts # Database setup
+│   │   └── repository.ts # Query functions
+│   ├── server/         # Hono web server
+│   │   ├── index.ts    # Server setup & static files
+│   │   └── routes/     # API endpoints
+│   ├── scheduler/      # Background job scheduler
+│   └── dashboard/      # Frontend (HTML/CSS/JS)
+│       ├── index.html  # Dashboard page
+│       ├── app.js      # Dashboard logic
+│       └── styles.css  # Terminal-aesthetic styling
+├── data/               # SQLite database (gitignored)
+└── server.ts           # Entry point
+```
 
-1. Caching may be load-balanced across servers without shared cache
-2. Cache eviction happens very quickly
-3. Or caching is still in development/testing
+## Tech Stack
+
+- **Runtime:** Bun
+- **Web Framework:** Hono
+- **Database:** SQLite (bun:sqlite)
+- **Frontend:** Vanilla JS + Chart.js
+- **Styling:** Custom terminal aesthetic
+
+## Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `VENICE_API_KEY` | Venice API key (required) | - |
+| `PORT` | Server port | 3000 |
+| `ALLOWED_ORIGINS` | CORS origins (comma-separated) | localhost |
+
+## Key Finding: Claude Models Don't Cache
+
+Testing reveals that **Claude models (Opus, Sonnet) do not return cached tokens** through Venice, while other models like GLM and DeepSeek show consistent caching:
+
+| Provider | Caching Status |
+|----------|----------------|
+| Zhipu (GLM) | ✅ Working (78-99% hit rates) |
+| DeepSeek | ✅ Working (varies) |
+| Anthropic (Claude) | ❌ Not working (0% always) |
+| OpenAI (GPT) | ⚠️ Inconsistent |
+
+Use the Cache Microscope to verify this yourself with live API calls.
 
 ## License
 

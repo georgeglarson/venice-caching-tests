@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Venice Caching Health Monitor</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <!-- Optional: Add your own analytics here -->
+  <link rel="stylesheet" href="/cache/static/styles.css?v=HASH">
+</head>
+<body>
+  <main class="container">
+    <!-- Header Bar: Title | Stats | Health -->
+    <header class="dashboard-bar">
+      <span class="title">Venice Caching Health</span>
+      <span class="separator">|</span>
+      <span id="stat-last-test" class="stat-inline">Last: --</span>
+      <span class="separator">|</span>
+      <span id="stat-total-models" class="stat-inline">Models: --</span>
+      <span class="separator">|</span>
+      <span id="stat-caching-models" class="stat-inline">Caching: --</span>
+      <span class="separator">|</span>
+      <span id="stat-avg-rate" class="stat-inline">Avg: --%</span>
+      <span class="separator">|</span>
+      <span id="health-badge" class="health-indicator loading">Loading...</span>
+      <span class="separator">|</span>
+      <button onclick="manualRefresh()" class="refresh-btn" title="Refresh now">↻ <span id="refresh-countdown">60s</span></button>
+    </header>
+
+    <!-- Caching Summary: Hero section showing wins -->
+    <section id="caching-summary" class="summary-section">
+      <div class="summary-header">
+        <span class="summary-stat">
+          <span id="summary-count" class="big-number">--</span>
+          <span class="stat-label">Models with Caching</span>
+        </span>
+        <span id="summary-total" class="summary-total">of -- tested</span>
+      </div>
+      <div id="caching-models-list" class="caching-models">
+        <span class="loading-text">Loading...</span>
+      </div>
+      <details id="pending-models-section" class="pending-section">
+        <summary><span id="pending-count">--</span> models pending caching implementation</summary>
+        <div id="pending-models-list" class="pending-models"></div>
+      </details>
+    </section>
+
+    <!-- Model Results Table -->
+    <section id="model-table">
+      <div class="section-header">
+        <span class="section-title">All Models</span>
+        <div class="filter-controls">
+          <label>Provider: <select id="provider-filter">
+            <option value="all">All Providers</option>
+          </select></label>
+          <label>Status: <select id="status-filter">
+            <option value="all">All</option>
+            <option value="caching">Caching Only</option>
+            <option value="no-caching">No Caching</option>
+          </select></label>
+        </div>
+      </div>
+      <table role="grid">
+        <thead>
+          <tr>
+            <th scope="col">Model</th>
+            <th scope="col" title="Whether caching is working for this model">Caching</th>
+            <th scope="col" title="Average cache hit rate across all tests">Avg Rate</th>
+            <th scope="col" title="Highest cache hit rate observed">Best Rate</th>
+            <th scope="col" title="Cache rate trend over last 10 tests">Trend</th>
+            <th scope="col" title="Percentage of tests where caching worked">Reliability</th>
+            <th scope="col">Last Tested</th>
+          </tr>
+        </thead>
+        <tbody id="models-tbody">
+          <tr>
+            <td colspan="7" aria-busy="true">Loading models...</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- Charts: 2-Column Layout -->
+    <section id="charts" class="charts-grid">
+      <div class="chart-container">
+        <span class="chart-title">Model Cache Performance</span>
+        <canvas id="comparison-chart"></canvas>
+      </div>
+      <div class="chart-container">
+        <span class="chart-title">Cache Rate Trends <select id="trend-days"><option value="7">7d</option><option value="30" selected>30d</option><option value="90">90d</option></select></span>
+        <canvas id="trend-chart"></canvas>
+      </div>
+    </section>
+
+    <!-- Cache Microscope: Live Testing -->
+    <section id="microscope" class="microscope-section">
+      <div class="section-header">
+        <span class="section-title">🔬 Cache Microscope</span>
+        <span class="section-subtitle">Live test any model to verify caching behavior</span>
+      </div>
+
+      <div class="microscope-controls">
+        <div class="model-selectors">
+          <div class="selector-group">
+            <label>Model 1 (Test Subject)</label>
+            <select id="microscope-model1">
+              <option value="">Select model...</option>
+            </select>
+          </div>
+          <div class="selector-group">
+            <label>Model 2 (Comparison)</label>
+            <select id="microscope-model2">
+              <option value="">Select model...</option>
+            </select>
+          </div>
+        </div>
+        <div class="microscope-actions">
+          <button id="run-comparison" class="btn-primary">Run Comparison Test</button>
+          <button id="run-single" class="btn-secondary">Test Model 1 Only</button>
+        </div>
+      </div>
+
+      <div id="microscope-status" class="microscope-status hidden">
+        <span class="status-icon">⏳</span>
+        <span class="status-text">Running test... (takes ~10 seconds)</span>
+      </div>
+
+      <div id="microscope-results" class="microscope-results hidden">
+        <div class="result-comparison">
+          <div id="result-model1" class="result-card">
+            <h4 class="result-model-name">--</h4>
+            <div class="result-verdict" data-caching="unknown">--</div>
+            <div class="result-details">
+              <div class="request-pair">
+                <div class="request">
+                  <strong>Request 1 <span class="response-time r1-time">--ms</span></strong>
+                  <code>prompt_tokens: <span class="r1-prompt">--</span></code>
+                  <code>cached_tokens: <span class="r1-cached">--</span></code>
+                </div>
+                <div class="arrow">→</div>
+                <div class="request">
+                  <strong>Request 2 <span class="response-time r2-time">--ms</span></strong>
+                  <code>prompt_tokens: <span class="r2-prompt">--</span></code>
+                  <code class="highlight">cached_tokens: <span class="r2-cached">--</span></code>
+                </div>
+              </div>
+              <div class="cache-rate">
+                Cache Hit Rate: <strong class="rate-value">--%</strong>
+                <span class="time-diff"></span>
+              </div>
+            </div>
+          </div>
+
+          <div id="result-model2" class="result-card hidden">
+            <h4 class="result-model-name">--</h4>
+            <div class="result-verdict" data-caching="unknown">--</div>
+            <div class="result-details">
+              <div class="request-pair">
+                <div class="request">
+                  <strong>Request 1 <span class="response-time r1-time">--ms</span></strong>
+                  <code>prompt_tokens: <span class="r1-prompt">--</span></code>
+                  <code>cached_tokens: <span class="r1-cached">--</span></code>
+                </div>
+                <div class="arrow">→</div>
+                <div class="request">
+                  <strong>Request 2 <span class="response-time r2-time">--ms</span></strong>
+                  <code>prompt_tokens: <span class="r2-prompt">--</span></code>
+                  <code class="highlight">cached_tokens: <span class="r2-cached">--</span></code>
+                </div>
+              </div>
+              <div class="cache-rate">
+                Cache Hit Rate: <strong class="rate-value">--%</strong>
+                <span class="time-diff"></span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="comparison-conclusion" class="conclusion hidden">
+          <span class="conclusion-icon">⚠️</span>
+          <span class="conclusion-text">--</span>
+        </div>
+
+        <details class="raw-evidence">
+          <summary>Raw API Response (Evidence)</summary>
+          <pre id="raw-response" class="raw-json">--</pre>
+        </details>
+
+        <details class="reproducible-test">
+          <summary>Reproducible Test (Run It Yourself)</summary>
+          <p>Send this request twice with 2 seconds between. The second request should show <code>cached_tokens > 0</code> if caching works:</p>
+          <pre id="curl-command" class="curl-code">--</pre>
+          <button id="copy-curl" class="btn-secondary">Copy to Clipboard</button>
+        </details>
+      </div>
+    </section>
+
+    <!-- Token Usage Stats -->
+    <section id="usage-stats" class="usage-section">
+      <div class="section-header">
+        <span class="section-title">Token Usage (Last 30 Days)</span>
+      </div>
+      <div class="usage-grid">
+        <div class="usage-card">
+          <span class="usage-label">Total Requests</span>
+          <span id="usage-requests" class="usage-value">--</span>
+        </div>
+        <div class="usage-card">
+          <span class="usage-label">Prompt Tokens</span>
+          <span id="usage-prompt" class="usage-value">--</span>
+        </div>
+        <div class="usage-card">
+          <span class="usage-label">Cached Tokens</span>
+          <span id="usage-cached" class="usage-value">--</span>
+        </div>
+        <div class="usage-card">
+          <span class="usage-label">Completion Tokens</span>
+          <span id="usage-completion" class="usage-value">--</span>
+        </div>
+        <div class="usage-card highlight">
+          <span class="usage-label">Cache Savings</span>
+          <span id="usage-savings" class="usage-value">--%</span>
+        </div>
+        <div class="usage-card">
+          <span class="usage-label">Est. Daily Tokens</span>
+          <span id="usage-daily-avg" class="usage-value">--</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Test Evidence Logs -->
+    <section id="detailed-logs">
+      <div class="section-header">
+        <span class="section-title">Test Evidence</span>
+        <span class="log-filters">
+          <label><input type="radio" name="log-filter" value="all" checked> All</label>
+          <label><input type="radio" name="log-filter" value="cache-hits"> Hits</label>
+          <label><input type="radio" name="log-filter" value="errors"> Errors</label>
+          <label><input type="radio" name="log-filter" value="rate-limits"> Rate Limits</label>
+          <label><input type="radio" name="log-filter" value="timeouts"> Timeouts</label>
+        </span>
+      </div>
+      <details class="test-types-help" open>
+        <summary>Test Types Reference</summary>
+        <div class="test-types-grid">
+          <div><strong>basic</strong> - Sends same ~1200 token request twice; checks if 2nd has cached tokens</div>
+          <div><strong>prompt_sizes</strong> - Tests ~150/~500/~1200/~2000 token prompts for size thresholds</div>
+          <div><strong>partial_cache</strong> - Same system prompt, different user message; tests prefix caching</div>
+          <div><strong>persistence</strong> - 10 identical requests; checks if cache persists over time</div>
+          <div><strong>ttl</strong> - Tests cache lifetime with 1s, 5s, 10s, 30s delays between requests</div>
+        </div>
+      </details>
+      <p class="section-description">Click any row to see the full request payload and API response.</p>
+      <table id="logs-container" role="grid" class="logs-table">
+        <thead>
+          <tr>
+            <th scope="col">Time</th>
+            <th scope="col">Model</th>
+            <th scope="col" title="Test type: basic, prompt_sizes, partial_cache, or persistence">Test</th>
+            <th scope="col" title="Percentage of prompt tokens served from cache">Cache Rate</th>
+            <th scope="col" title="Cached tokens / Total prompt tokens">Tokens</th>
+          </tr>
+        </thead>
+        <tbody id="logs-body">
+          <tr class="logs-placeholder">
+            <td colspan="5" aria-busy="true">Loading test results...</td>
+          </tr>
+        </tbody>
+      </table>
+      <div id="logs-pagination" class="pagination hidden">
+        <span id="logs-showing">Showing 0 of 0</span>
+        <button id="logs-show-more" class="btn-secondary">Show More</button>
+      </div>
+    </section>
+
+    <!-- Logs Section -->
+    <section id="logs-section">
+      <div class="section-header">
+        <span class="section-title">Server Logs</span>
+        <button id="refresh-logs" class="btn-secondary">Refresh</button>
+      </div>
+      <pre id="server-logs" class="logs-pre">Loading...</pre>
+    </section>
+
+    <!-- Footer -->
+    <footer>Venice Caching Health Monitor | Tests run every 10 minutes | Auto-refresh: 60s</footer>
+  </main>
+
+  <script src="/cache/static/app.js?v=HASH"></script>
+</body>
+</html>

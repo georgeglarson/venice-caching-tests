@@ -3,7 +3,7 @@ node_modules
 
 # output
 out
-dist
+dist/
 *.tgz
 
 # code coverage
@@ -32,3 +32,12 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 # Finder (MacOS) folder config
 .DS_Store
+
+# Database
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# Old test result exports
+results-*.json
