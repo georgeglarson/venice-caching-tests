@@ -11,6 +11,7 @@ import {
   testPersistence,
   testTTL,
 } from "./tests/index.ts";
+import { metricsCollector } from "../metrics/collector.ts";
 import type {
   ModelResults,
   TestConfig,
@@ -19,7 +20,7 @@ import type {
   VeniceModel,
 } from "./types.ts";
 
-function calculateCachingMetrics(
+export function calculateCachingMetrics(
   tests: TestResult[],
   thresholds: TestConfig['cachingSupportThreshold']
 ): { overallCachingSupport: boolean; bestCacheRate: number; reliabilityScore: number } {
@@ -92,7 +93,9 @@ export async function testModel(
 
   // Generate a unique test run ID for cache isolation if enabled
   const testRunId = config.injectTestRunId !== false ? (config.testRunId ?? crypto.randomUUID()) : undefined;
-  const testConfig: TestConfig = { ...config, testRunId };
+  // Generate correlation ID for tracking across the test lifecycle
+  const correlationId = crypto.randomUUID();
+  const testConfig: TestConfig = { ...config, testRunId, correlationId };
 
   const results: ModelResults = {
     model: model.id,
@@ -111,34 +114,57 @@ export async function testModel(
     ["ttl", config.runTTLTest, () => testTTL(model.id, testConfig, log)],
   ];
 
-  for (const [name, enabled, fn] of testFunctions) {
-    if (!enabled) continue;
+  // Track active tests
+  metricsCollector.incrementActiveTests();
 
-    onTestComplete?.(name, "started");
-    try {
-      const result = await fn();
-      results.tests.push(result);
-      onTestComplete?.(name, "completed", result);
-    } catch (error) {
-      onTestComplete?.(name, "failed");
-      results.tests.push({
-        testName: name,
-        model: model.id,
-        success: false,
-        cachingWorks: false,
-        cacheHitRate: null,
-        details: {},
-        error: String(error),
-      });
+  try {
+    for (const [name, enabled, fn] of testFunctions) {
+      if (!enabled) continue;
+
+      onTestComplete?.(name, "started");
+      const testStartTime = Date.now();
+
+      try {
+        const result = await fn();
+        const testDuration = Date.now() - testStartTime;
+
+        // Record test duration and result
+        metricsCollector.recordTestDuration(name, testDuration);
+        metricsCollector.recordTestResult(name, result.success ?? false);
+
+        results.tests.push(result);
+        onTestComplete?.(name, "completed", result);
+      } catch (error) {
+        const testDuration = Date.now() - testStartTime;
+
+        // Record test duration and failure
+        metricsCollector.recordTestDuration(name, testDuration);
+        metricsCollector.recordTestResult(name, false);
+        metricsCollector.recordError("test_error", model.id);
+
+        onTestComplete?.(name, "failed");
+        results.tests.push({
+          testName: name,
+          model: model.id,
+          success: false,
+          cachingWorks: false,
+          cacheHitRate: null,
+          details: {},
+          error: String(error),
+        });
+      }
     }
+
+    const metrics = calculateCachingMetrics(results.tests, config.cachingSupportThreshold);
+    results.overallCachingSupport = metrics.overallCachingSupport;
+    results.bestCacheRate = metrics.bestCacheRate;
+    results.cachingReliabilityScore = metrics.reliabilityScore;
+
+    return results;
+  } finally {
+    // Always decrement active tests count
+    metricsCollector.decrementActiveTests();
   }
-
-  const metrics = calculateCachingMetrics(results.tests, config.cachingSupportThreshold);
-  results.overallCachingSupport = metrics.overallCachingSupport;
-  results.bestCacheRate = metrics.bestCacheRate;
-  results.cachingReliabilityScore = metrics.reliabilityScore;
-
-  return results;
 }
 
 export interface RunTestsOptions {

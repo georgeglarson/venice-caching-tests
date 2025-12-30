@@ -3,11 +3,12 @@
  */
 
 import { getDatabase, initDatabase } from "./migrations.ts";
-import type { TestResultRow, TokenUsageRow } from "./schema.ts";
+import type { TestResultRow } from "./schema.ts";
 import type { TestResult } from "../core/types.ts";
 import type { UsageInfo } from "../core/types.ts";
+import { invalidateAllCaches } from "../cache/repository.ts";
 
-// Ensure database is initialized
+// Initialize database and run migrations on first import
 initDatabase();
 
 // ============ Save Results ============
@@ -29,6 +30,9 @@ export function saveResult(result: TestResult, modelName?: string): void {
     result.testRunId || null,
     result.cacheIsolationNote || null
   );
+
+  // Invalidate all cached data since new results were added
+  invalidateAllCaches();
 }
 
 // ============ Query Results ============

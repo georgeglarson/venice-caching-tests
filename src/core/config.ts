@@ -3,38 +3,37 @@
  */
 
 import type { TestConfig } from "./types.ts";
+import { env } from "../config/env.ts";
+import { API_CONSTANTS, TEST_CONSTANTS } from "../config/constants.ts";
 
-export const VENICE_API_URL = "https://api.venice.ai/api/v1";
+export const VENICE_API_URL = API_CONSTANTS.VENICE_API_URL;
 
 export function getApiKey(): string {
-  const key = process.env.VENICE_API_KEY || process.env.API_KEY_VENICE;
-  if (!key) {
-    throw new Error("VENICE_API_KEY environment variable is required");
-  }
-  return key;
+  return env.veniceApiKey;
 }
 
 export const DEFAULT_CONFIG: TestConfig = {
   runBasicTest: true,
-  runPromptSizeTest: true,
-  runPartialCacheTest: true,
-  runPersistenceTest: true,
-  runTTLTest: true,
+  runPromptSizeTest: false,      // Disabled to reduce API usage
+  runPartialCacheTest: false,    // Disabled to reduce API usage
+  runPersistenceTest: false,     // Disabled to reduce API usage
+  runTTLTest: false,             // Disabled to reduce API usage
   maxModels: 0, // 0 = all models; used by CLI only (scheduler cycles through all)
-  delayBetweenModels: 5000,     // 5 second delay between models for cache isolation
+  delayBetweenModels: TEST_CONSTANTS.DEFAULT_DELAY_BETWEEN_MODELS_MS,
   cachingSupportThreshold: {
-    minTestsWithCaching: 3,     // At least 3 tests must show caching
+    minTestsWithCaching: 1,     // Only basic test runs now
     minCacheHitRate: 50,        // Cache hit rate must be ≥50%
     minSuccessRate: 60,         // At least 60% of tests must succeed
   },
-  maxTokens: 50,
+  maxTokens: TEST_CONSTANTS.DEFAULT_MAX_TOKENS,
   cacheControlPlacement: 'system',
-  delayBetweenRequests: 2000,  // 2 seconds between requests to avoid rate limits
-  ttlDelays: [1, 5, 10, 30],
+  delayBetweenRequests: TEST_CONSTANTS.DEFAULT_DELAY_BETWEEN_REQUESTS_MS,
+  ttlDelays: [...TEST_CONSTANTS.DEFAULT_TTL_DELAYS_SECONDS],
   injectTestRunId: true,        // Enable test run ID injection by default
-  isolationDelay: 5000,         // 5 second delay between model tests for cache isolation
-  persistenceRequests: 10,      // 10 requests in persistence test for better sampling
-  basicTestRepetitions: 1,      // Number of basic test repetitions (increase for more samples)
+  isolationDelay: TEST_CONSTANTS.DEFAULT_ISOLATION_DELAY_MS,
+  persistenceRequests: TEST_CONSTANTS.DEFAULT_PERSISTENCE_REQUESTS,
+  basicTestRepetitions: TEST_CONSTANTS.DEFAULT_BASIC_TEST_REPETITIONS,
+  requestTimeoutMs: API_CONSTANTS.REQUEST_TIMEOUT_MS,
 };
 
 export type PromptSize = "small" | "medium" | "large" | "xlarge";

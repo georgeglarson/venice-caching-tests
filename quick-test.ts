@@ -2,7 +2,7 @@
  * Quick Venice Caching Test - tests only known caching models
  */
 
-import { sendRequest, getApiKey, PROMPTS } from "./src/core/index.ts";
+import { sendRequest, getApiKey } from "./src/core/index.ts";
 
 const CACHING_MODELS = [
   "grok-41-fast",
@@ -22,7 +22,7 @@ const QUICK_PROMPTS = {
 };
 
 async function testModel(modelId: string, size: keyof typeof QUICK_PROMPTS) {
-  const req1 = await sendRequest(modelId, QUICK_PROMPTS[size], "Hi.");
+  await sendRequest(modelId, QUICK_PROMPTS[size], "Hi.");
   await Bun.sleep(500);
   const req2 = await sendRequest(modelId, QUICK_PROMPTS[size], "Hi.");
 

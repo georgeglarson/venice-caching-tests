@@ -58,6 +58,10 @@ export interface TestConfig {
   injectTestRunId?: boolean;                             // Whether to inject test run ID into prompts for cache isolation (default: true)
   persistenceRequests?: number;                          // Number of requests in persistence test (default: 10)
   basicTestRepetitions?: number;                         // Number of times to repeat basic test for larger sample (default: 1)
+  /** Request timeout in milliseconds. Defaults to API_CONSTANTS.REQUEST_TIMEOUT_MS (30000ms) */
+  requestTimeoutMs?: number;
+  /** Correlation ID for end-to-end request tracing across the test lifecycle */
+  correlationId?: string;
 }
 
 export interface VeniceModel {

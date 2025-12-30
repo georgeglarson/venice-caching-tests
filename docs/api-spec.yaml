@@ -1,0 +1,753 @@
+openapi: 3.0.3
+info:
+  title: Venice Caching Health Monitor API
+  description: |
+    REST API for monitoring Venice.ai prompt caching support across models.
+
+    ## Authentication
+
+    Optional API key authentication via `X-API-Key` header when `DASHBOARD_API_KEY` is configured.
+
+    ## Rate Limiting
+
+    - 100 requests per minute per IP address
+    - Rate limit headers included in all responses
+
+    ## Endpoints
+
+    All endpoints are prefixed with `/cache/api/`
+  version: 2.0.0
+  contact:
+    name: Venice Caching Health Monitor
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:3000/cache/api
+    description: Local development server
+  - url: https://your-domain.com/cache/api
+    description: Production server
+
+security:
+  - ApiKeyAuth: []
+  - {}
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Optional API key for dashboard authentication
+
+  schemas:
+    DashboardStats:
+      type: object
+      properties:
+        lastTestAt:
+          type: string
+          format: date-time
+          example: "2025-01-15 10:30:00"
+        totalTests:
+          type: integer
+          example: 1250
+        totalModels:
+          type: integer
+          example: 45
+        modelsWithCaching:
+          type: integer
+          example: 12
+        avgCacheRate:
+          type: number
+          format: float
+          example: 67.5
+
+    ModelStats:
+      type: object
+      properties:
+        model_id:
+          type: string
+          example: "claude-3-5-sonnet"
+        model_name:
+          type: string
+          nullable: true
+          example: "Claude 3.5 Sonnet"
+        total_tests:
+          type: integer
+          example: 25
+        successful_cache_tests:
+          type: integer
+          example: 10
+        avg_cache_rate:
+          type: number
+          format: float
+          example: 45.5
+        avg_cache_rate_nonzero:
+          type: number
+          format: float
+          nullable: true
+          example: 85.0
+        tests_with_caching:
+          type: integer
+          example: 10
+        best_cache_rate:
+          type: number
+          format: float
+          example: 100.0
+        worst_cache_rate:
+          type: number
+          format: float
+          example: 0.0
+        last_tested_at:
+          type: string
+          format: date-time
+          nullable: true
+        cache_reliability_score:
+          type: number
+          format: float
+          example: 40.0
+
+    ModelSparklineData:
+      type: object
+      properties:
+        model_id:
+          type: string
+          example: "claude-3-5-sonnet"
+        rates:
+          type: array
+          items:
+            type: number
+          description: Recent cache hit rates for sparkline, oldest to newest
+          example: [0, 45.5, 85.0, 100.0, 75.0]
+
+    TestResult:
+      type: object
+      properties:
+        id:
+          type: integer
+        modelId:
+          type: string
+        modelName:
+          type: string
+        testName:
+          type: string
+          enum: [basic, prompt_sizes, partial_cache, persistence, ttl]
+        cachingWorks:
+          type: boolean
+        cacheHitRate:
+          type: number
+          format: float
+        details:
+          type: object
+        error:
+          type: string
+          nullable: true
+        testedAt:
+          type: string
+          format: date-time
+        testRunId:
+          type: string
+          format: uuid
+        cacheIsolationNote:
+          type: string
+
+    LiveTestResult:
+      type: object
+      properties:
+        model:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        prompt_size:
+          type: string
+          enum: [large, xlarge]
+        prompt_tokens_sent:
+          type: integer
+        request1:
+          $ref: '#/components/schemas/LiveTestRequest'
+        request2:
+          $ref: '#/components/schemas/LiveTestRequest'
+        cache_working:
+          type: boolean
+        cache_hit_rate:
+          type: number
+          format: float
+        delay_between_requests_ms:
+          type: integer
+        request_body:
+          type: object
+        reproducible_curl:
+          type: string
+
+    LiveTestRequest:
+      type: object
+      properties:
+        prompt_tokens:
+          type: integer
+        cached_tokens:
+          type: integer
+        completion_tokens:
+          type: integer
+        response_time_ms:
+          type: integer
+        raw_usage:
+          type: object
+
+    HealthCheck:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [healthy, degraded, unhealthy]
+        timestamp:
+          type: string
+          format: date-time
+        scheduler:
+          type: object
+        stats:
+          type: object
+        security:
+          type: object
+        cache:
+          type: object
+        metrics:
+          type: object
+        issues:
+          type: array
+          items:
+            type: string
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+
+paths:
+  /stats:
+    get:
+      summary: Get dashboard overview stats
+      description: Returns aggregated statistics for the dashboard overview
+      tags:
+        - Dashboard
+      responses:
+        '200':
+          description: Dashboard statistics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DashboardStats'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /models:
+    get:
+      summary: Get all models with statistics
+      description: Returns all tested models with computed statistics
+      tags:
+        - Models
+      responses:
+        '200':
+          description: List of models with stats
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ModelStats'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /sparklines:
+    get:
+      summary: Get sparkline data for all models
+      description: Returns recent cache rates for inline trend charts
+      tags:
+        - Models
+      parameters:
+        - name: limit
+          in: query
+          description: Number of data points per model (5-20)
+          schema:
+            type: integer
+            default: 10
+            minimum: 5
+            maximum: 20
+      responses:
+        '200':
+          description: Sparkline data
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ModelSparklineData'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /results:
+    get:
+      summary: Get recent test results
+      description: Returns recent test results for the evidence table
+      tags:
+        - Tests
+      parameters:
+        - name: limit
+          in: query
+          description: Number of results to return (1-1000)
+          schema:
+            type: integer
+            default: 100
+            minimum: 1
+            maximum: 1000
+      responses:
+        '200':
+          description: List of test results
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TestResult'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /history:
+    get:
+      summary: Get cache rate history
+      description: Returns historical cache rate data for charts
+      tags:
+        - Analytics
+      parameters:
+        - name: days
+          in: query
+          description: Number of days of history (1-365)
+          schema:
+            type: integer
+            default: 30
+            minimum: 1
+            maximum: 365
+      responses:
+        '200':
+          description: Historical data
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /usage:
+    get:
+      summary: Get token usage statistics
+      description: Returns token consumption and cache savings statistics
+      tags:
+        - Analytics
+      parameters:
+        - name: days
+          in: query
+          description: Number of days to analyze (1-365)
+          schema:
+            type: integer
+            default: 30
+            minimum: 1
+            maximum: 365
+      responses:
+        '200':
+          description: Usage statistics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  stats:
+                    type: object
+                  daily:
+                    type: array
+                    items:
+                      type: object
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /logs:
+    get:
+      summary: Get recent log lines
+      description: Returns recent server log entries
+      tags:
+        - System
+      parameters:
+        - name: lines
+          in: query
+          description: Number of log lines to return (1-500)
+          schema:
+            type: integer
+            default: 100
+            minimum: 1
+            maximum: 500
+      responses:
+        '200':
+          description: Log entries
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  logs:
+                    type: array
+                    items:
+                      type: string
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /health:
+    get:
+      summary: Comprehensive health check
+      description: Returns system health status with detailed metrics
+      tags:
+        - System
+      security: []
+      responses:
+        '200':
+          description: Health check result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthCheck'
+        '500':
+          description: Health check failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /scheduler:
+    get:
+      summary: Get scheduler status
+      description: Returns current scheduler state and queue information
+      tags:
+        - System
+      responses:
+        '200':
+          description: Scheduler status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled:
+                    type: boolean
+                  intervalMinutes:
+                    type: integer
+                  queueLength:
+                    type: integer
+                  stoppedDueToBalance:
+                    type: boolean
+                  failedModels:
+                    type: integer
+                  skippedModels:
+                    type: integer
+                  errorSummary:
+                    type: string
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /metrics:
+    get:
+      summary: Get Prometheus metrics
+      description: Returns metrics in Prometheus or JSON format
+      tags:
+        - Observability
+      security: []
+      parameters:
+        - name: format
+          in: query
+          description: Output format
+          schema:
+            type: string
+            enum: [prometheus, json]
+            default: prometheus
+      responses:
+        '200':
+          description: Metrics data
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: |
+                # HELP test_duration_seconds Test execution time
+                # TYPE test_duration_seconds histogram
+                test_duration_seconds_bucket{test_name="basic",le="1"} 45
+            application/json:
+              schema:
+                type: object
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /cache-stats:
+    get:
+      summary: Get cache statistics
+      description: Returns in-memory cache hit/miss statistics
+      tags:
+        - System
+      responses:
+        '200':
+          description: Cache statistics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled:
+                    type: boolean
+                  stats:
+                    type: object
+                  ttl_seconds:
+                    type: integer
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /run:
+    post:
+      summary: Trigger manual test run
+      description: Manually triggers a test cycle for all models
+      tags:
+        - Tests
+      responses:
+        '200':
+          description: Test run started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "started"
+                  queueLength:
+                    type: integer
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /test/{modelId}:
+    get:
+      summary: Live test a single model
+      description: Runs a live cache test on the specified model
+      tags:
+        - Tests
+      parameters:
+        - name: modelId
+          in: path
+          required: true
+          description: Model ID to test
+          schema:
+            type: string
+            example: "claude-3-5-sonnet"
+      responses:
+        '200':
+          description: Test result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LiveTestResult'
+        '400':
+          description: Invalid model ID
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Test failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /compare/{model1}/{model2}:
+    get:
+      summary: Compare two models
+      description: Runs live tests on two models and compares results
+      tags:
+        - Tests
+      parameters:
+        - name: model1
+          in: path
+          required: true
+          description: First model ID
+          schema:
+            type: string
+        - name: model2
+          in: path
+          required: true
+          description: Second model ID
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Comparison result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  timestamp:
+                    type: string
+                    format: date-time
+                  comparison:
+                    type: object
+                    properties:
+                      model1:
+                        $ref: '#/components/schemas/LiveTestResult'
+                      model2:
+                        $ref: '#/components/schemas/LiveTestResult'
+                  summary:
+                    type: object
+        '400':
+          description: Invalid model IDs
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Comparison failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /model/{modelId}/history:
+    get:
+      summary: Get model test history
+      description: Returns detailed test history for a specific model
+      tags:
+        - Models
+      parameters:
+        - name: modelId
+          in: path
+          required: true
+          description: Model ID
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Number of results (1-200)
+          schema:
+            type: integer
+            default: 50
+            minimum: 1
+            maximum: 200
+      responses:
+        '200':
+          description: Model history
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  model_id:
+                    type: string
+                  total_tests:
+                    type: integer
+                  tests_with_caching:
+                    type: integer
+                  caching_success_rate:
+                    type: number
+                  average_cache_hit_rate:
+                    type: number
+                  tests:
+                    type: array
+                    items:
+                      type: object
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /venice-models:
+    get:
+      summary: Get fresh models from Venice API
+      description: Fetches the current list of models directly from Venice.ai
+      tags:
+        - Models
+      responses:
+        '200':
+          description: List of Venice models
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: string
+                    name:
+                      type: string
+        '500':
+          description: Failed to fetch models
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+tags:
+  - name: Dashboard
+    description: Dashboard overview endpoints
+  - name: Models
+    description: Model information and statistics
+  - name: Tests
+    description: Test execution and results
+  - name: Analytics
+    description: Historical data and usage statistics
+  - name: System
+    description: System health and status
+  - name: Observability
+    description: Metrics and monitoring

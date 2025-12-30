@@ -3,42 +3,42 @@
  */
 
 import { VENICE_API_URL, getApiKey } from "./config.ts";
-import type { UsageInfo, VeniceModel } from "./types.ts";
-
-// Request timeout in milliseconds
-const REQUEST_TIMEOUT_MS = 30000;
-
-// Retry configuration
-const MAX_RETRIES = 3;
-const INITIAL_RETRY_DELAY_MS = 2000; // Start with 2s, then 4s, then 8s
+import { fetchWithTimeout, parseJsonResponse } from "../utils/http.ts";
+import { withRetry, isTimeoutError } from "../utils/retry.ts";
+import { env } from "../config/env.ts";
+import { API_CONSTANTS } from "../config/constants.ts";
+import { metricsCollector } from "../metrics/collector.ts";
+import { logWithContext } from "./logger.ts";
+import type { UsageInfo, VeniceModel, TestConfig } from "./types.ts";
 
 /**
- * Creates a fetch request with timeout using AbortController
+ * Generates a short unique request ID for correlation tracking.
+ * Format: 8-character alphanumeric string
  */
-async function fetchWithTimeout(
-  url: string,
-  options: RequestInit,
-  timeoutMs: number = REQUEST_TIMEOUT_MS
-): Promise<Response> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-
-  try {
-    const response = await fetch(url, {
-      ...options,
-      signal: controller.signal,
-    });
-    return response;
-  } finally {
-    clearTimeout(timeoutId);
-  }
+function generateRequestId(): string {
+  return Math.random().toString(36).substring(2, 10);
 }
 
 /**
- * Delays execution for specified milliseconds
+ * Logs API request details if debug logging is enabled.
  */
-function delay(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
+function logApiRequest(requestId: string, method: string, url: string, payload?: unknown, correlationId?: string): void {
+  if (!env.debugApiRequests) return;
+
+  logWithContext("info", `API ${method} ${url}`, { requestId, correlationId }, payload ? { payload } : undefined);
+}
+
+/**
+ * Logs API response details if debug logging is enabled.
+ */
+function logApiResponse(requestId: string, status: number, usage?: UsageInfo, error?: string, correlationId?: string): void {
+  if (!env.debugApiRequests) return;
+
+  if (error) {
+    logWithContext("error", `API Response Error`, { requestId, correlationId }, { status, error });
+  } else {
+    logWithContext("info", `API Response: ${status}`, { requestId, correlationId }, usage ? { tokens: usage.promptTokens, cached: usage.cachedTokens } : undefined);
+  }
 }
 
 export function extractUsage(usage: unknown): UsageInfo {
@@ -52,45 +52,107 @@ export function extractUsage(usage: unknown): UsageInfo {
 }
 
 export async function fetchModels(): Promise<VeniceModel[]> {
-  let lastError: Error | null = null;
+  const requestId = generateRequestId();
+  const url = `${VENICE_API_URL}/models`;
+  logApiRequest(requestId, "GET", url);
 
-  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-    try {
-      const response = await fetchWithTimeout(`${VENICE_API_URL}/models`, {
-        headers: { Authorization: `Bearer ${getApiKey()}` },
-      });
+  const startTime = Date.now();
 
-      if (response.status === 429) {
-        // Rate limited - wait and retry with exponential backoff
-        const retryDelay = INITIAL_RETRY_DELAY_MS * Math.pow(2, attempt);
-        await delay(retryDelay);
-        continue;
+  try {
+    return await withRetry(
+      async () => {
+        const response = await fetchWithTimeout(url, {
+          headers: { Authorization: `Bearer ${getApiKey()}` },
+        });
+
+        const duration = Date.now() - startTime;
+
+        if (response.status === 429) {
+          metricsCollector.recordApiResponseTime("models", duration, 429);
+          metricsCollector.recordError("rate_limit");
+          throw new Error(`[${requestId}] Rate limited (HTTP 429)`);
+        }
+
+        if (!response.ok) {
+          metricsCollector.recordApiResponseTime("models", duration, response.status);
+          metricsCollector.recordError("api_error");
+          throw new Error(`[${requestId}] Failed to fetch models: ${response.status}`);
+        }
+
+        metricsCollector.recordApiResponseTime("models", duration, response.status);
+
+        const data = (await parseJsonResponse(response)) as { data?: VeniceModel[] };
+        logApiResponse(requestId, response.status);
+        return data.data || [];
+      },
+      {
+        shouldRetry: (error) => {
+          // Retry on rate limits, timeouts, and transient errors
+          return error.message.includes("429") || isTimeoutError(error);
+        },
+        onRetry: (error) => {
+          // Transform AbortError to more descriptive message
+          if (error.name === "AbortError") {
+            error.message = `[${requestId}] Request timeout`;
+          }
+        },
       }
-
-      if (!response.ok) {
-        throw new Error(`Failed to fetch models: ${response.status}`);
-      }
-
-      const data = (await response.json()) as { data?: VeniceModel[] };
-      return data.data || [];
-    } catch (e) {
-      lastError = e instanceof Error ? e : new Error(String(e));
-
-      // Check if it's a timeout (aborted)
-      if (lastError.name === 'AbortError') {
-        lastError = new Error('Request timeout');
-      }
-
-      // Retry on transient errors
-      if (attempt < MAX_RETRIES - 1) {
-        const retryDelay = INITIAL_RETRY_DELAY_MS * Math.pow(2, attempt);
-        await delay(retryDelay);
-        continue;
-      }
+    );
+  } catch (e) {
+    const duration = Date.now() - startTime;
+    metricsCollector.recordApiResponseTime("models", duration, 0);
+    if (isTimeoutError(e as Error)) {
+      metricsCollector.recordError("timeout");
+    } else {
+      metricsCollector.recordError("api_error");
     }
+    throw e;
   }
+}
 
-  throw lastError || new Error('Failed to fetch models after retries');
+/**
+ * Fetches the current diem balance using a lightweight API call.
+ * Uses the /models endpoint which returns balance in response headers.
+ * @returns Promise resolving to the current diem balance, or null if unavailable
+ */
+export async function fetchDiemBalance(): Promise<number | null> {
+  const requestId = generateRequestId();
+  const url = `${VENICE_API_URL}/models`;
+  logApiRequest(requestId, "GET", url);
+
+  const startTime = Date.now();
+
+  try {
+    const response = await fetchWithTimeout(url, {
+      headers: { Authorization: `Bearer ${getApiKey()}` },
+    });
+
+    const duration = Date.now() - startTime;
+
+    if (!response.ok) {
+      metricsCollector.recordApiResponseTime("balance", duration, response.status);
+      metricsCollector.recordError("api_error");
+      logApiResponse(requestId, response.status, undefined, `HTTP ${response.status}`);
+      return null;
+    }
+
+    metricsCollector.recordApiResponseTime("balance", duration, response.status);
+
+    const diemBalance = parseFloat(response.headers.get("x-venice-balance-diem") || "");
+    logApiResponse(requestId, response.status);
+    return isNaN(diemBalance) ? null : diemBalance;
+  } catch (e) {
+    const duration = Date.now() - startTime;
+    metricsCollector.recordApiResponseTime("balance", duration, 0);
+    const error = e instanceof Error ? e.message : String(e);
+    if (isTimeoutError(e as Error)) {
+      metricsCollector.recordError("timeout");
+    } else {
+      metricsCollector.recordError("api_error");
+    }
+    logApiResponse(requestId, 0, undefined, error);
+    return null;
+  }
 }
 
 export interface RequestPayload {
@@ -135,6 +197,8 @@ export interface RequestResult {
  * @param maxTokens - Max tokens for the response (defaults to 50)
  * @param cacheControlPlacement - Where to apply cache_control: 'system', 'user', or 'both' (defaults to 'system')
  * @param testRunId - Optional unique test run ID to inject into system prompt for cache isolation
+ * @param config - Optional TestConfig for request timeout configuration
+ * @param correlationId - Optional correlation ID for end-to-end request tracing
  * @returns Promise resolving to usage information and optional error
  */
 export async function sendRequest(
@@ -143,8 +207,13 @@ export async function sendRequest(
   userMessage: string,
   maxTokens?: number,
   cacheControlPlacement?: 'system' | 'user' | 'both',
-  testRunId?: string
+  testRunId?: string,
+  config?: TestConfig,
+  correlationId?: string
 ): Promise<RequestResult> {
+  const requestId = generateRequestId();
+  const timeoutMs = config?.requestTimeoutMs ?? API_CONSTANTS.REQUEST_TIMEOUT_MS;
+  const url = `${VENICE_API_URL}/chat/completions`;
   const placement = cacheControlPlacement ?? 'system';
   const cacheControl = { type: "ephemeral" };
 
@@ -176,82 +245,114 @@ export async function sendRequest(
     venice_parameters: { include_venice_system_prompt: false },
   };
 
-  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-    try {
-      const response = await fetchWithTimeout(`${VENICE_API_URL}/chat/completions`, {
-        method: "POST",
-        headers: {
+  logApiRequest(requestId, "POST", url, payload, correlationId);
+
+  const startTime = Date.now();
+
+  try {
+    const result = await withRetry(
+      async () => {
+        const headers: Record<string, string> = {
           Authorization: `Bearer ${getApiKey()}`,
           "Content-Type": "application/json",
+        };
+        if (correlationId) {
+          headers["X-Correlation-Id"] = correlationId;
+        }
+
+        const response = await fetchWithTimeout(url, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(payload),
+        }, timeoutMs);
+
+        const duration = Date.now() - startTime;
+
+        if (response.status === 429) {
+          metricsCollector.recordApiResponseTime("chat_completions", duration, 429);
+          const error = new Error(`[${requestId}] HTTP 429`);
+          (error as Error & { statusCode?: number }).statusCode = 429;
+          throw error;
+        }
+
+        if (response.status >= 500 && response.status < 600) {
+          metricsCollector.recordApiResponseTime("chat_completions", duration, response.status);
+          const error = new Error(`[${requestId}] HTTP ${response.status}`);
+          (error as Error & { statusCode?: number }).statusCode = response.status;
+          throw error;
+        }
+
+        if (!response.ok) {
+          metricsCollector.recordApiResponseTime("chat_completions", duration, response.status);
+          const error = new Error(`[${requestId}] HTTP ${response.status}`);
+          (error as Error & { statusCode?: number; nonRetryable?: boolean }).statusCode = response.status;
+          (error as Error & { nonRetryable?: boolean }).nonRetryable = true;
+          throw error;
+        }
+
+        metricsCollector.recordApiResponseTime("chat_completions", duration, response.status);
+
+        const diemBalance = parseFloat(response.headers.get("x-venice-balance-diem") || "") || undefined;
+        const data = (await parseJsonResponse(response)) as { usage?: unknown };
+        const usage = extractUsage(data.usage);
+        usage.diemBalance = diemBalance;
+        logApiResponse(requestId, response.status, usage, undefined, correlationId);
+        return { usage, payload };
+      },
+      {
+        shouldRetry: (error) => {
+          // Don't retry non-retryable errors (4xx except 429)
+          if ((error as Error & { nonRetryable?: boolean }).nonRetryable) {
+            return false;
+          }
+          const statusCode = (error as Error & { statusCode?: number }).statusCode;
+          // Retry on rate limits (429), server errors (5xx), and timeout errors
+          return statusCode === 429 || (statusCode !== undefined && statusCode >= 500) || isTimeoutError(error);
         },
-        body: JSON.stringify(payload),
-      });
-
-      if (response.status === 429) {
-        // Rate limited - retry with exponential backoff
-        if (attempt < MAX_RETRIES - 1) {
-          const retryDelay = INITIAL_RETRY_DELAY_MS * Math.pow(2, attempt);
-          await delay(retryDelay);
-          continue;
-        }
-        return {
-          usage: { promptTokens: 0, cachedTokens: 0, completionTokens: 0 },
-          payload,
-          error: `HTTP 429 (after ${MAX_RETRIES} retries)`,
-          errorType: 'rate_limit' as ErrorType,
-        };
+        onRetry: (error) => {
+          // Transform AbortError to more descriptive message
+          if (error.name === "AbortError") {
+            error.message = `[${requestId}] Request timeout`;
+          }
+        },
       }
+    );
+    return result;
+  } catch (e) {
+    const duration = Date.now() - startTime;
+    const error = e instanceof Error ? e : new Error(String(e));
+    const statusCode = (error as Error & { statusCode?: number }).statusCode;
+    const isAbort = error.name === "AbortError";
 
-      if (!response.ok) {
-        // Server errors (5xx) are retryable
-        if (response.status >= 500 && response.status < 600 && attempt < MAX_RETRIES - 1) {
-          const retryDelay = INITIAL_RETRY_DELAY_MS * Math.pow(2, attempt);
-          await delay(retryDelay);
-          continue;
-        }
-        return {
-          usage: { promptTokens: 0, cachedTokens: 0, completionTokens: 0 },
-          payload,
-          error: `HTTP ${response.status}`,
-          errorType: 'api_error' as ErrorType,
-        };
-      }
+    let errorType: ErrorType;
+    let errorMessage: string;
 
-      const diemBalance = parseFloat(response.headers.get("x-venice-balance-diem") || "") || undefined;
-      const data = (await response.json()) as { usage?: unknown };
-      const usage = extractUsage(data.usage);
-      usage.diemBalance = diemBalance;
-      return { usage, payload };
-    } catch (e) {
-      const error = e instanceof Error ? e : new Error(String(e));
-      const isAbort = error.name === 'AbortError';
-      const errorMessage = String(e).toLowerCase();
-      const isTimeout = isAbort ||
-                        errorMessage.includes('timeout') ||
-                        errorMessage.includes('etimedout') ||
-                        errorMessage.includes('econnaborted');
-
-      // Retry on timeout/network errors
-      if (attempt < MAX_RETRIES - 1) {
-        const retryDelay = INITIAL_RETRY_DELAY_MS * Math.pow(2, attempt);
-        await delay(retryDelay);
-        continue;
-      }
-
-      return {
-        usage: { promptTokens: 0, cachedTokens: 0, completionTokens: 0 },
-        payload,
-        error: isAbort ? 'Request timeout' : String(e),
-        errorType: isTimeout ? 'timeout' : 'api_error',
-      };
+    if (statusCode === 429) {
+      errorType = 'rate_limit';
+      errorMessage = `[${requestId}] HTTP 429 (after retries)`;
+      metricsCollector.recordError("rate_limit", modelId);
+    } else if (isTimeoutError(error)) {
+      errorType = 'timeout';
+      errorMessage = isAbort ? `[${requestId}] Request timeout` : `[${requestId}] ${error.message}`;
+      metricsCollector.recordError("timeout", modelId);
+    } else {
+      errorType = 'api_error';
+      errorMessage = `[${requestId}] ${error.message}`;
+      metricsCollector.recordError("api_error", modelId);
     }
-  }
 
-  // Should never reach here, but TypeScript needs a return
-  return {
-    usage: { promptTokens: 0, cachedTokens: 0, completionTokens: 0 },
-    payload,
-    error: 'Max retries exceeded',
-    errorType: 'api_error',
-  };
+    // Record response time for failed requests (if not already recorded in retry loop)
+    if (statusCode === undefined) {
+      metricsCollector.recordApiResponseTime("chat_completions", duration, 0);
+    }
+
+    logApiResponse(requestId, 0, undefined, errorMessage, correlationId);
+
+    return {
+      usage: { promptTokens: 0, cachedTokens: 0, completionTokens: 0 },
+      payload,
+      error: errorMessage,
+      errorType,
+    };
+  }
 }

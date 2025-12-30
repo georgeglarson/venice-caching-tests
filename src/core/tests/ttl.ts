@@ -12,6 +12,7 @@ export async function testTTL(
   log: (msg: string) => void = console.log
 ): Promise<TestResult> {
   const testRunId = config.injectTestRunId !== false ? config.testRunId : undefined;
+  const correlationId = config.correlationId;
   const delays = config.ttlDelays ?? [1, 5, 10, 30];
   let attemptedCount = 0;
   let failedCount = 0;
@@ -33,7 +34,7 @@ export async function testTTL(
   };
 
   for (const delay of delays) {
-    const req1 = await sendRequest(modelId, PROMPTS.large, "Test.", config.maxTokens, config.cacheControlPlacement, testRunId);
+    const req1 = await sendRequest(modelId, PROMPTS.large, "Test.", config.maxTokens, config.cacheControlPlacement, testRunId, config, correlationId);
     attemptedCount++;
     if (req1.error) {
       failedCount++;
@@ -54,7 +55,7 @@ export async function testTTL(
     log(`    Waiting ${delay}s...`);
     await Bun.sleep(delay * 1000);
 
-    const req2 = await sendRequest(modelId, PROMPTS.large, "Test.", config.maxTokens, config.cacheControlPlacement, testRunId);
+    const req2 = await sendRequest(modelId, PROMPTS.large, "Test.", config.maxTokens, config.cacheControlPlacement, testRunId, config, correlationId);
     attemptedCount++;
     if (req2.error) {
       failedCount++;

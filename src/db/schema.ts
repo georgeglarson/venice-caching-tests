@@ -57,4 +57,5 @@ export interface TokenUsageRow {
   prompt_tokens: number;
   cached_tokens: number;
   completion_tokens: number;
+  diem_balance: number | null;
 }

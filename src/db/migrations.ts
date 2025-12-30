@@ -3,7 +3,8 @@
  */
 
 import { Database } from "bun:sqlite";
-import { SCHEMA } from "./schema.ts";
+import { ensureMigrationTable, getAppliedMigrations, recordMigration } from "./migrations/tracker.ts";
+import { ALL_MIGRATIONS } from "./migrations/index.ts";
 
 const DB_PATH = "./data/cache-health.db";
 
@@ -25,39 +26,135 @@ export function getDatabase(): Database {
   return db;
 }
 
-export function initDatabase(): void {
-  const database = getDatabase();
-  database.exec(SCHEMA);
+/**
+ * Detects if the database is a legacy database (has tables but no migration tracking)
+ */
+export function detectLegacyDatabase(database: Database): boolean {
+  // Check if test_results table exists
+  const testResultsTable = database
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='test_results'")
+    .get();
 
-  // Run migrations for new columns on existing tables
-  migrateAddColumns(database);
+  // Check if schema_migrations table exists
+  const migrationsTable = database
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_migrations'")
+    .get();
 
-  console.log("Database initialized at:", DB_PATH);
+  // Legacy database: has test_results but no schema_migrations
+  return testResultsTable !== null && migrationsTable === null;
 }
 
-function migrateAddColumns(database: Database): void {
-  // Check if test_run_id column exists, if not add it
-  const columns = database.prepare("PRAGMA table_info(test_results)").all() as Array<{ name: string }>;
-  const columnNames = columns.map(c => c.name);
+/**
+ * Gets column names for a table
+ */
+function getColumnNames(database: Database, tableName: string): string[] {
+  const columns = database.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>;
+  return columns.map((c) => c.name);
+}
 
-  if (!columnNames.includes("test_run_id")) {
-    database.exec("ALTER TABLE test_results ADD COLUMN test_run_id TEXT");
-    console.log("Migration: Added test_run_id column");
+/**
+ * Checks if a table exists in the database
+ */
+function tableExists(database: Database, tableName: string): boolean {
+  const result = database
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?")
+    .get(tableName);
+  return result !== null;
+}
+
+/**
+ * Handles legacy database by ensuring base tables exist and marking appropriate migrations as applied
+ */
+export function handleLegacyDatabase(database: Database): void {
+  console.log("Detected legacy database, marking existing migrations as applied...");
+
+  // Ensure migration table exists first
+  ensureMigrationTable(database);
+
+  // Check if base tables exist - legacy DB has test_results but may be missing token_usage
+  const hasTestResults = tableExists(database, "test_results");
+  const hasTokenUsage = tableExists(database, "token_usage");
+
+  // If any base table is missing, run migration 001 to create them
+  // The migration uses CREATE TABLE IF NOT EXISTS so it's safe to run even if some tables exist
+  if (!hasTestResults || !hasTokenUsage) {
+    console.log("Legacy database missing base tables, creating them...");
+    const initialMigration = ALL_MIGRATIONS.find((m) => m.version === 1);
+    if (initialMigration) {
+      initialMigration.up(database);
+    }
   }
 
-  if (!columnNames.includes("cache_isolation_note")) {
-    database.exec("ALTER TABLE test_results ADD COLUMN cache_isolation_note TEXT");
-    console.log("Migration: Added cache_isolation_note column");
+  // Now mark migration 001 as applied (tables are confirmed to exist)
+  recordMigration(database, 1, "initial_schema");
+
+  // Check test_results columns
+  const testResultsColumns = getColumnNames(database, "test_results");
+
+  // Migration 002 (add_test_run_id)
+  if (testResultsColumns.includes("test_run_id")) {
+    recordMigration(database, 2, "add_test_run_id");
   }
 
-  // Check token_usage table for diem_balance column
-  const usageColumns = database.prepare("PRAGMA table_info(token_usage)").all() as Array<{ name: string }>;
-  const usageColumnNames = usageColumns.map(c => c.name);
-
-  if (usageColumnNames.length > 0 && !usageColumnNames.includes("diem_balance")) {
-    database.exec("ALTER TABLE token_usage ADD COLUMN diem_balance REAL");
-    console.log("Migration: Added diem_balance column to token_usage");
+  // Migration 003 (add_cache_isolation_note)
+  if (testResultsColumns.includes("cache_isolation_note")) {
+    recordMigration(database, 3, "add_cache_isolation_note");
   }
+
+  // Check token_usage columns
+  const tokenUsageColumns = getColumnNames(database, "token_usage");
+
+  // Migration 004 (add_diem_balance)
+  if (tokenUsageColumns.includes("diem_balance")) {
+    recordMigration(database, 4, "add_diem_balance");
+  }
+
+  console.log("Legacy database migration tracking initialized");
+}
+
+/**
+ * Runs all pending migrations
+ */
+export function runPendingMigrations(database: Database): number {
+  const appliedMigrations = getAppliedMigrations(database);
+  const appliedVersions = new Set(appliedMigrations.map((m) => m.version));
+
+  const pendingMigrations = ALL_MIGRATIONS.filter((m) => !appliedVersions.has(m.version)).sort(
+    (a, b) => a.version - b.version
+  );
+
+  let appliedCount = 0;
+
+  for (const migration of pendingMigrations) {
+    console.log(`Running migration ${migration.version}: ${migration.name}`);
+    migration.up(database);
+    recordMigration(database, migration.version, migration.name);
+    console.log(`Migration ${migration.version} completed`);
+    appliedCount++;
+  }
+
+  return appliedCount;
+}
+
+export function initDatabase(): void {
+  const database = getDatabase();
+
+  // Handle legacy databases without migration tracking
+  if (detectLegacyDatabase(database)) {
+    handleLegacyDatabase(database);
+  } else {
+    // Ensure migration table exists for new databases
+    ensureMigrationTable(database);
+  }
+
+  // Run any pending migrations
+  const applied = runPendingMigrations(database);
+
+  if (applied > 0) {
+    console.log(`Applied ${applied} migration(s)`);
+  }
+
+  console.log("Database initialized at:", DB_PATH);
 }
 
 export function closeDatabase(): void {

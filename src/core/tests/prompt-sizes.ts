@@ -8,6 +8,7 @@ import type { TestConfig, TestResult } from "../types.ts";
 
 export async function testPromptSizes(modelId: string, config: TestConfig): Promise<TestResult> {
   const testRunId = config.injectTestRunId !== false ? config.testRunId : undefined;
+  const correlationId = config.correlationId;
   const sizes: PromptSize[] = ["small", "medium", "large", "xlarge"];
   let attemptedCount = 0;
   let failedCount = 0;
@@ -29,7 +30,7 @@ export async function testPromptSizes(modelId: string, config: TestConfig): Prom
   };
 
   for (const size of sizes) {
-    const req1 = await sendRequest(modelId, PROMPTS[size], "Hi.", config.maxTokens, config.cacheControlPlacement, testRunId);
+    const req1 = await sendRequest(modelId, PROMPTS[size], "Hi.", config.maxTokens, config.cacheControlPlacement, testRunId, config, correlationId);
     attemptedCount++;
     if (req1.error) {
       failedCount++;
@@ -49,7 +50,7 @@ export async function testPromptSizes(modelId: string, config: TestConfig): Prom
 
     await Bun.sleep(config.delayBetweenRequests ?? 500);
 
-    const req2 = await sendRequest(modelId, PROMPTS[size], "Hi.", config.maxTokens, config.cacheControlPlacement, testRunId);
+    const req2 = await sendRequest(modelId, PROMPTS[size], "Hi.", config.maxTokens, config.cacheControlPlacement, testRunId, config, correlationId);
     attemptedCount++;
     if (req2.error) {
       failedCount++;

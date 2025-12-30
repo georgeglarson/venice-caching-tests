@@ -8,6 +8,7 @@ import type { TestConfig, TestResult } from "../types.ts";
 
 export async function testPartialCache(modelId: string, config: TestConfig): Promise<TestResult> {
   const testRunId = config.injectTestRunId !== false ? config.testRunId : undefined;
+  const correlationId = config.correlationId;
 
   const result: TestResult = {
     testName: "partial_cache",
@@ -19,7 +20,7 @@ export async function testPartialCache(modelId: string, config: TestConfig): Pro
     testRunId,
   };
 
-  const req1 = await sendRequest(modelId, PROMPTS.large, "What is 2+2?", config.maxTokens, config.cacheControlPlacement, testRunId);
+  const req1 = await sendRequest(modelId, PROMPTS.large, "What is 2+2?", config.maxTokens, config.cacheControlPlacement, testRunId, config, correlationId);
   if (req1.error) {
     result.error = req1.error;
     result.details.firstRequest = req1;
@@ -34,7 +35,7 @@ export async function testPartialCache(modelId: string, config: TestConfig): Pro
 
   await Bun.sleep(config.delayBetweenRequests ?? 500);
 
-  const req2 = await sendRequest(modelId, PROMPTS.large, "What is 3+3?", config.maxTokens, config.cacheControlPlacement, testRunId);
+  const req2 = await sendRequest(modelId, PROMPTS.large, "What is 3+3?", config.maxTokens, config.cacheControlPlacement, testRunId, config, correlationId);
   if (req2.error) {
     result.error = req2.error;
     result.details.secondRequest = req2;

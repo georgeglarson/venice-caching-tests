@@ -8,6 +8,7 @@ import type { TestConfig, TestResult } from "../types.ts";
 
 export async function testPersistence(modelId: string, config: TestConfig): Promise<TestResult> {
   const testRunId = config.injectTestRunId !== false ? config.testRunId : undefined;
+  const correlationId = config.correlationId;
   const totalAttempts = config.persistenceRequests ?? 10;
   let attemptedCount = 0;
   let failedCount = 0;
@@ -29,7 +30,7 @@ export async function testPersistence(modelId: string, config: TestConfig): Prom
 
   for (let i = 0; i < totalAttempts; i++) {
     attemptedCount++;
-    const req = await sendRequest(modelId, PROMPTS.large, "Count.", config.maxTokens, config.cacheControlPlacement, testRunId);
+    const req = await sendRequest(modelId, PROMPTS.large, "Count.", config.maxTokens, config.cacheControlPlacement, testRunId, config, correlationId);
 
     if (req.error) {
       failedCount++;

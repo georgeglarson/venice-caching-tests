@@ -4,65 +4,80 @@
 
 import { Hono } from "hono";
 import {
-  getDashboardStats,
-  getModelStats,
   getRecentResults,
   getHistory,
   getUsageStats,
   getDailyUsage,
-  getModelSparklines,
 } from "../../db/index.ts";
+import {
+  getCachedDashboardStats,
+  getCachedModelStats,
+  getCachedModelSparklines,
+} from "../../cache/repository.ts";
+import { memoryCache } from "../../cache/memory.ts";
+import { CACHE_CONSTANTS } from "../../config/constants.ts";
 import { getRecentLogs } from "../../core/logger.ts";
+import { metricsCollector } from "../../metrics/collector.ts";
 import { scheduler } from "../../scheduler/index.ts";
 import { getApiKey, VENICE_API_URL } from "../../core/config.ts";
 import { PROMPTS } from "../../core/config.ts";
+import { parseJsonResponse, delay } from "../../utils/http.ts";
+import { clampInt, safeJsonParse } from "../../utils/validation.ts";
+import { env } from "../../config/env.ts";
+import { rateLimiter } from "../middleware/rateLimiter.ts";
 
 const api = new Hono();
 
-// Input validation helpers
-function clampInt(value: string | undefined, defaultVal: number, min: number, max: number): number {
-  const parsed = parseInt(value || String(defaultVal));
-  if (isNaN(parsed)) return defaultVal;
-  return Math.min(Math.max(parsed, min), max);
-}
+/**
+ * Creates a structured error response with helpful details.
+ * Avoids exposing internal error messages in production.
+ */
+function createErrorResponse(
+  baseMessage: string,
+  error: unknown,
+  includeDetails = process.env.NODE_ENV !== "production"
+): { error: string; details?: string; timestamp: string } {
+  const errorMessage = error instanceof Error ? error.message : String(error);
+  const response: { error: string; details?: string; timestamp: string } = {
+    error: baseMessage,
+    timestamp: new Date().toISOString(),
+  };
 
-function safeJsonParse(json: string | null): unknown {
-  if (!json) return null;
-  try {
-    return JSON.parse(json);
-  } catch {
-    return { _parseError: true, _raw: json.slice(0, 100) };
+  if (includeDetails && errorMessage) {
+    response.details = errorMessage;
   }
+
+  return response;
 }
 
-// Dashboard overview stats (computed on-demand)
+// Dashboard overview stats (cached)
 api.get("/stats", (c) => {
   try {
-    const stats = getDashboardStats();
+    const stats = getCachedDashboardStats();
     return c.json(stats);
   } catch (error) {
-    return c.json({ error: "Failed to load stats" }, 500);
+    return c.json(createErrorResponse("Failed to load dashboard stats", error), 500);
   }
 });
 
-// All models with stats (computed from results)
+// All models with stats (cached)
 api.get("/models", (c) => {
   try {
-    const models = getModelStats();
+    const models = getCachedModelStats();
     return c.json(models);
   } catch (error) {
-    return c.json({ error: "Failed to load models" }, 500);
+    return c.json(createErrorResponse("Failed to load model stats", error), 500);
   }
 });
 
-// Sparkline data for all models (recent cache rates)
+// Sparkline data for all models (cached)
 api.get("/sparklines", (c) => {
   try {
     const limit = clampInt(c.req.query("limit"), 10, 5, 20);
-    const sparklines = getModelSparklines(limit);
+    const sparklines = getCachedModelSparklines(limit);
     return c.json(sparklines);
   } catch (error) {
-    return c.json({ error: "Failed to load sparklines" }, 500);
+    return c.json(createErrorResponse("Failed to load sparkline data", error), 500);
   }
 });
 
@@ -87,7 +102,7 @@ api.get("/results", (c) => {
       }))
     );
   } catch (error) {
-    return c.json({ error: "Failed to load results" }, 500);
+    return c.json(createErrorResponse("Failed to load test results", error), 500);
   }
 });
 
@@ -98,7 +113,7 @@ api.get("/history", (c) => {
     const history = getHistory(days);
     return c.json(history);
   } catch (error) {
-    return c.json({ error: "Failed to load history" }, 500);
+    return c.json(createErrorResponse("Failed to load cache history", error), 500);
   }
 });
 
@@ -109,7 +124,7 @@ api.get("/logs", (c) => {
     const logs = getRecentLogs(lines);
     return c.json({ logs });
   } catch (error) {
-    return c.json({ error: "Failed to load logs" }, 500);
+    return c.json(createErrorResponse("Failed to load server logs", error), 500);
   }
 });
 
@@ -121,9 +136,10 @@ api.post("/run", async (c) => {
     return c.json({
       status: "started",
       queueLength: status.queueLength,
+      timestamp: new Date().toISOString(),
     });
   } catch (error) {
-    return c.json({ error: "Failed to start test run" }, 500);
+    return c.json(createErrorResponse("Failed to start test run", error), 500);
   }
 });
 
@@ -132,7 +148,7 @@ api.get("/scheduler", (c) => {
   try {
     return c.json(scheduler.getStatus());
   } catch (error) {
-    return c.json({ error: "Failed to get scheduler status" }, 500);
+    return c.json(createErrorResponse("Failed to get scheduler status", error), 500);
   }
 });
 
@@ -144,14 +160,14 @@ api.get("/usage", (c) => {
     const daily = getDailyUsage(days);
     return c.json({ stats, daily });
   } catch (error) {
-    return c.json({ error: "Failed to load usage stats" }, 500);
+    return c.json(createErrorResponse("Failed to load usage stats", error), 500);
   }
 });
 
 // Comprehensive health check
 api.get("/health", (c) => {
   try {
-    const stats = getDashboardStats();
+    const stats = getCachedDashboardStats();
     const schedulerStatus = scheduler.getStatus();
 
     // Calculate minutes since last test
@@ -185,6 +201,8 @@ api.get("/health", (c) => {
       issues.push("No models in queue");
     }
 
+    const metricsSummary = metricsCollector.getSummary();
+
     return c.json({
       status,
       timestamp: new Date().toISOString(),
@@ -196,6 +214,13 @@ api.get("/health", (c) => {
         lastTestAt: stats.lastTestAt,
         minutesSinceLastTest: Math.round(minutesSinceLastTest),
       },
+      security: {
+        authentication: env.dashboardApiKey ? "enabled" : "disabled",
+        rateLimiting: "enabled",
+        rateLimitStats: rateLimiter.getStats(),
+      },
+      cache: memoryCache.getStats(),
+      metrics: metricsSummary,
       issues: issues.length > 0 ? issues : undefined,
     });
   } catch (error) {
@@ -204,6 +229,67 @@ api.get("/health", (c) => {
       timestamp: new Date().toISOString(),
       error: "Health check failed",
     }, 500);
+  }
+});
+
+// Cache statistics
+api.get("/cache-stats", (c) => {
+  try {
+    const stats = memoryCache.getStats();
+    return c.json({
+      enabled: true,
+      stats,
+      ttl_seconds: CACHE_CONSTANTS.DEFAULT_TTL_MS / 1000,
+    });
+  } catch (error) {
+    return c.json(createErrorResponse("Failed to load cache stats", error), 500);
+  }
+});
+
+// Prometheus-compatible metrics endpoint
+api.get("/metrics", (c) => {
+  try {
+    const format = c.req.query("format") || "prometheus";
+    if (format === "json") {
+      return c.json(metricsCollector.getMetrics());
+    }
+    // Default: Prometheus format
+    const metrics = metricsCollector.getPrometheusMetrics();
+    return c.text(metrics, 200, {
+      "Content-Type": "text/plain; version=0.0.4",
+    });
+  } catch (error) {
+    return c.json(createErrorResponse("Failed to generate metrics", error), 500);
+  }
+});
+
+// ============ Fresh Models from Venice API ============
+
+api.get("/venice-models", async (c) => {
+  try {
+    const resp = await fetch(`${VENICE_API_URL}/models`, {
+      headers: {
+        "Authorization": `Bearer ${getApiKey()}`,
+      },
+    });
+
+    if (!resp.ok) {
+      return c.json({
+        error: `Venice API returned HTTP ${resp.status}`,
+        timestamp: new Date().toISOString(),
+        hint: resp.status === 401 ? "Check your VENICE_API_KEY" : undefined,
+      }, 500);
+    }
+
+    const data = await parseJsonResponse(resp) as { data?: { id: string; name?: string }[] };
+    const models = (data.data || []).map((m) => ({
+      id: m.id,
+      name: m.name || m.id,
+    }));
+
+    return c.json(models);
+  } catch (error) {
+    return c.json(createErrorResponse("Failed to fetch Venice models", error), 500);
   }
 });
 
@@ -234,7 +320,7 @@ interface LiveTestResult {
 async function runLiveTest(modelId: string, promptSize: "large" | "xlarge" = "large"): Promise<LiveTestResult> {
   const systemPrompt = PROMPTS[promptSize];
   const userMessage = "Respond with exactly: OK";
-  const delay = 2000;
+  const delayMs = 2000;
 
   const makeRequest = async (): Promise<{ data: unknown; timeMs: number; error?: string }> => {
     const start = Date.now();
@@ -253,7 +339,7 @@ async function runLiveTest(modelId: string, promptSize: "large" | "xlarge" = "la
         max_tokens: 10,
       }),
     });
-    const data = await resp.json() as { error?: { message?: string } };
+    const data = await parseJsonResponse(resp) as { error?: { message?: string } };
     const timeMs = Date.now() - start;
 
     if (!resp.ok || data.error) {
@@ -274,7 +360,7 @@ async function runLiveTest(modelId: string, promptSize: "large" | "xlarge" = "la
   const r1Usage = (r1.data as { usage?: { prompt_tokens?: number; completion_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } } }).usage;
 
   // Wait for cache to populate
-  await new Promise((resolve) => setTimeout(resolve, delay));
+  await delay(delayMs);
 
   // Request 2 (identical)
   const r2 = await makeRequest();
@@ -283,7 +369,6 @@ async function runLiveTest(modelId: string, promptSize: "large" | "xlarge" = "la
   }
   const r2Usage = (r2.data as { usage?: { prompt_tokens?: number; completion_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } } }).usage;
 
-  const r1Cached = r1Usage?.prompt_tokens_details?.cached_tokens || 0;
   const r2Cached = r2Usage?.prompt_tokens_details?.cached_tokens || 0;
   const r2Prompt = r2Usage?.prompt_tokens || 0;
 
@@ -338,23 +423,63 @@ EOF
     },
     cache_working: r2Cached > 0,
     cache_hit_rate: Math.round(cacheHitRate * 100) / 100,
-    delay_between_requests_ms: delay,
+    delay_between_requests_ms: delayMs,
     request_body: requestBody,
     reproducible_curl: curlCommand,
   };
 }
 
+/**
+ * Validates a model ID format.
+ * Model IDs should be alphanumeric with hyphens, dots, and underscores.
+ * Examples: "llama-3.3-70b", "claude-3-5-sonnet", "deepseek-r1"
+ */
+function isValidModelIdFormat(modelId: string): boolean {
+  // Model ID must be 1-100 characters, alphanumeric with hyphens, dots, underscores, and colons
+  const modelIdPattern = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,99}$/;
+  return modelIdPattern.test(modelId);
+}
+
 // Live test single model
 api.get("/test/:modelId", async (c) => {
+  const modelId = c.req.param("modelId");
   try {
-    const modelId = c.req.param("modelId");
-    if (!modelId || modelId.length > 100) {
-      return c.json({ error: "Invalid model ID" }, 400);
+    if (!modelId) {
+      return c.json({
+        error: "Model ID is required",
+        hint: "Provide a valid model ID in the URL path, e.g., /cache/api/test/llama-3.3-70b"
+      }, 400);
     }
+
+    if (!isValidModelIdFormat(modelId)) {
+      return c.json({
+        error: "Invalid model ID format",
+        model: modelId,
+        hint: "Model ID must be 1-100 characters, starting with alphanumeric, containing only letters, numbers, hyphens, dots, underscores, or colons"
+      }, 400);
+    }
+
     const result = await runLiveTest(modelId);
     return c.json(result);
   } catch (error) {
-    return c.json({ error: `Test failed: ${error}` }, 500);
+    const errorMessage = error instanceof Error ? error.message : String(error);
+
+    // Provide helpful error messages based on common failure patterns
+    let hint: string | undefined;
+    if (errorMessage.includes("model") && (errorMessage.includes("not found") || errorMessage.includes("404"))) {
+      hint = "The model ID may not exist. Use /cache/api/venice-models to list available models.";
+    } else if (errorMessage.includes("rate") || errorMessage.includes("429")) {
+      hint = "Rate limited. Wait a moment before retrying.";
+    } else if (errorMessage.includes("timeout")) {
+      hint = "Request timed out. The model may be overloaded.";
+    }
+
+    return c.json({
+      error: `Test failed: ${errorMessage}`,
+      model: modelId,
+      timestamp: new Date().toISOString(),
+      hint
+    }, 500);
   }
 });
 
@@ -364,13 +489,32 @@ api.get("/compare/:model1/:model2", async (c) => {
     const model1 = c.req.param("model1");
     const model2 = c.req.param("model2");
 
-    if (!model1 || !model2 || model1.length > 100 || model2.length > 100) {
-      return c.json({ error: "Invalid model IDs" }, 400);
+    if (!model1 || !model2) {
+      return c.json({
+        error: "Both model IDs are required",
+        hint: "Provide two model IDs in the URL path, e.g., /cache/api/compare/llama-3.3-70b/deepseek-r1"
+      }, 400);
+    }
+
+    if (!isValidModelIdFormat(model1)) {
+      return c.json({
+        error: "Invalid model1 ID format",
+        model: model1,
+        hint: "Model ID must be 1-100 characters, starting with alphanumeric"
+      }, 400);
+    }
+
+    if (!isValidModelIdFormat(model2)) {
+      return c.json({
+        error: "Invalid model2 ID format",
+        model: model2,
+        hint: "Model ID must be 1-100 characters, starting with alphanumeric"
+      }, 400);
     }
 
     // Run tests sequentially to avoid rate limits
     const result1 = await runLiveTest(model1);
-    await new Promise((resolve) => setTimeout(resolve, 3000)); // Gap between models
+    await delay(3000); // Gap between models
     const result2 = await runLiveTest(model2);
 
     return c.json({
@@ -390,7 +534,11 @@ api.get("/compare/:model1/:model2", async (c) => {
       },
     });
   } catch (error) {
-    return c.json({ error: `Comparison failed: ${error}` }, 500);
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    return c.json({
+      error: `Comparison failed: ${errorMessage}`,
+      timestamp: new Date().toISOString()
+    }, 500);
   }
 });
 
@@ -398,6 +546,14 @@ api.get("/compare/:model1/:model2", async (c) => {
 api.get("/model/:modelId/history", (c) => {
   try {
     const modelId = c.req.param("modelId");
+
+    if (!modelId || !isValidModelIdFormat(modelId)) {
+      return c.json({
+        error: "Invalid model ID format",
+        hint: "Model ID must be 1-100 characters, starting with alphanumeric"
+      }, 400);
+    }
+
     const limit = clampInt(c.req.query("limit"), 50, 1, 200);
 
     const results = getRecentResults(1000).filter(r => r.model_id === modelId).slice(0, limit);
@@ -425,7 +581,7 @@ api.get("/model/:modelId/history", (c) => {
       })),
     });
   } catch (error) {
-    return c.json({ error: "Failed to load model history" }, 500);
+    return c.json(createErrorResponse("Failed to load model history", error), 500);
   }
 });
 

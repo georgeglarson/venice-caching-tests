@@ -932,8 +932,31 @@ function initMicroscope() {
 
 async function populateMicroscopeModels() {
   try {
-    const response = await fetch(`${BASE_PATH}/api/models`);
-    allModels = await response.json();
+    // Fetch fresh models from Venice AND historical stats
+    const [veniceResp, statsResp] = await Promise.all([
+      fetch(`${BASE_PATH}/api/venice-models`),
+      fetch(`${BASE_PATH}/api/models`)
+    ]);
+
+    const veniceModels = await veniceResp.json();
+    const statsModels = await statsResp.json();
+
+    // Create lookup for stats
+    const statsLookup = {};
+    statsModels.forEach(m => {
+      statsLookup[m.model_id] = m;
+    });
+
+    // Use Venice models as the source of truth, enrich with stats
+    allModels = veniceModels.map(vm => {
+      const stats = statsLookup[vm.id] || {};
+      return {
+        model_id: vm.id,
+        model_name: vm.name,
+        caching_works: (stats.avg_cache_rate || 0) > 0,
+        avg_cache_rate: stats.avg_cache_rate || 0,
+      };
+    });
 
     const model1Select = document.getElementById('microscope-model1');
     const model2Select = document.getElementById('microscope-model2');
@@ -947,7 +970,7 @@ async function populateMicroscopeModels() {
     // Add options
     sortedModels.forEach(model => {
       const name = model.model_name || model.model_id;
-      const cacheIcon = model.caching_works ? '✓' : '✗';
+      const cacheIcon = model.caching_works ? '✓' : '?';
       const rate = model.avg_cache_rate ? ` (${model.avg_cache_rate.toFixed(0)}%)` : '';
 
       const option1 = document.createElement('option');
@@ -961,12 +984,12 @@ async function populateMicroscopeModels() {
       model2Select.appendChild(option2);
     });
 
-    // Pre-select a broken model (like Opus) and a working one (like GLM)
+    // Pre-select a broken model (like Opus) and a working one (like GLM or DeepSeek)
     const opusModel = sortedModels.find(m => m.model_id.includes('opus'));
-    const glmModel = sortedModels.find(m => m.model_id.includes('glm') && m.caching_works);
+    const cachingModel = sortedModels.find(m => (m.model_id.includes('glm') || m.model_id.includes('deepseek')) && m.caching_works);
 
     if (opusModel) model1Select.value = opusModel.model_id;
-    if (glmModel) model2Select.value = glmModel.model_id;
+    if (cachingModel) model2Select.value = cachingModel.model_id;
 
   } catch (error) {
     console.error('Failed to populate microscope models:', error);

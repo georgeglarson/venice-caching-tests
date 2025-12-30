@@ -2,12 +2,13 @@
  * Venice Caching Health Monitor - Server Entry Point
  */
 
+import { env } from "./src/config/env.ts";
 import app from "./src/server/index.ts";
 // Import scheduler to auto-start tests
 import { scheduler } from "./src/scheduler/index.ts";
 import { closeDatabase } from "./src/db/migrations.ts";
 
-const port = parseInt(process.env.PORT || "3000");
+const port = env.port;
 
 console.log(`
 ╔══════════════════════════════════════════════════════════════╗
@@ -42,6 +43,7 @@ process.on("SIGINT", () => gracefulShutdown("SIGINT"));
 export default {
   port,
   fetch: app.fetch,
+  idleTimeout: 120, // 2 minutes - comparison tests take ~15 seconds
 };
 
 console.log(`
