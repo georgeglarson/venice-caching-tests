@@ -495,21 +495,21 @@ For true horizontal scaling of the scheduler, you would need to implement:
 
 These features are not currently implemented. For most use cases, a single server with 256MB+ RAM is sufficient to monitor all Venice models.
 
-## Key Finding: Caching Support Varies by Provider
+## Key Finding: Only Some Frontier Models Support Caching
 
-Testing reveals that caching support varies significantly across Venice's model providers:
+Prompt caching is a provider-level feature - only models whose upstream providers support caching will return cached tokens through Venice. Most open-source and smaller models do not support caching at the provider level.
 
 | Provider | Models | Caching Status |
 |----------|--------|----------------|
-| Zhipu | GLM 4.6, GLM 4.7, GLM 4.6V | ✅ Excellent (78-99% hit rates) |
+| Zhipu | GLM 4.6, GLM 4.7, GLM 4.6V | ✅ Working (78-99% hit rates) |
 | xAI | Grok 41 Fast | ✅ Working (80%+ hit rates) |
-| DeepSeek | DeepSeek V3.2 | ✅ Working (varies by request) |
+| DeepSeek | DeepSeek V3.2 | ✅ Working |
 | Kimi | Kimi K2 Thinking | ✅ Working |
-| Qwen | Qwen3 series | ⚠️ Varies by model |
-| Meta | Llama 3.2, Llama 3.3 | ⚠️ Inconsistent |
-| Mistral | Mistral 31 24B | ⚠️ Inconsistent |
-| Google | Gemini 3 Pro/Flash, Gemma 3 | ⚠️ Testing needed |
-| Venice | Venice Uncensored | ❌ Not working (0% always) |
+| Meta | Llama 3.2, Llama 3.3 | ❌ No caching support |
+| Mistral | Mistral 31 24B | ❌ No caching support |
+| Qwen | Qwen3 series | ❌ No caching support |
+| Google | Gemini, Gemma | ❌ No caching support |
+| Venice | Venice Uncensored | ❌ No caching support |
 
 Use the Cache Microscope to verify caching behavior yourself with live API calls.
 
