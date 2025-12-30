@@ -499,17 +499,23 @@ These features are not currently implemented. For most use cases, a single serve
 
 Prompt caching is a provider-level feature - only models whose upstream providers support caching will return cached tokens through Venice. Most open-source and smaller models do not support caching at the provider level.
 
-| Provider | Models | Caching Status |
-|----------|--------|----------------|
-| Zhipu | GLM 4.6, GLM 4.7, GLM 4.6V | ✅ Working (78-99% hit rates) |
-| xAI | Grok 41 Fast | ✅ Working (80%+ hit rates) |
-| DeepSeek | DeepSeek V3.2 | ✅ Working |
-| Kimi | Kimi K2 Thinking | ✅ Working |
-| Meta | Llama 3.2, Llama 3.3 | ❌ No caching support |
-| Mistral | Mistral 31 24B | ❌ No caching support |
-| Qwen | Qwen3 series | ❌ No caching support |
-| Google | Gemini, Gemma | ❌ No caching support |
-| Venice | Venice Uncensored | ❌ No caching support |
+| Provider | Models | Cache Rate | Status |
+|----------|--------|------------|--------|
+| Zhipu | GLM 4.6V | ~97% | ✅ Excellent |
+| Zhipu | GLM 4.7 | ~95% | ✅ Excellent |
+| DeepSeek | DeepSeek V3.2 | ~80% | ✅ Working |
+| Zhipu | GLM 4.6 | ~76% | ✅ Working |
+| Kimi | Kimi K2 Thinking | ~70% | ✅ Working |
+| xAI | Grok 41 Fast | ~63% | ✅ Working |
+| OpenAI | GPT-52 | ~3% | ⚠️ Marginal |
+| OpenAI | GPT-OSS-120B | 0% | ❌ None |
+| Anthropic | Claude Opus 45 | 0% | ❌ None |
+| Google | Gemini 3 Pro/Flash | 0% | ❌ None |
+| Google | Gemma 3 27B | 0% | ❌ None |
+| Meta | Llama 3.2, 3.3 | 0% | ❌ None |
+| Mistral | Mistral 31 24B | 0% | ❌ None |
+| Qwen | Qwen3 series | 0% | ❌ None |
+| Venice | Venice Uncensored | 0% | ❌ None |
 
 Use the Cache Microscope to verify caching behavior yourself with live API calls.
 
