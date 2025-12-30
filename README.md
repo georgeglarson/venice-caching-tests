@@ -7,7 +7,7 @@ A comprehensive test suite and web dashboard to monitor Venice.ai prompt caching
 - **Web Dashboard** - Real-time monitoring at `/cache/`
 - **Cache Microscope** - Live test any model with reproducible curl commands
 - **Historical Sparklines** - Inline trend charts for each model
-- **Provider Filtering** - Filter by Anthropic, OpenAI, Zhipu, DeepSeek, etc.
+- **Provider Filtering** - Filter by Zhipu, DeepSeek, Qwen, Mistral, xAI, Google, etc.
 - **Scheduled Tests** - Automatic 10-minute testing cycles
 - **Token Usage Tracking** - Monitor token consumption and cache savings
 - **Auto Data Retention** - Automatic cleanup of data older than 30 days
@@ -358,7 +358,7 @@ JSON log entries include:
 
 Example JSON log:
 ```json
-{"timestamp":"2025-01-15T10:30:00.000Z","level":"INFO","message":"Testing: claude-3-5-sonnet","correlationId":"a1b2c3d4-e5f6-7890-abcd-ef1234567890"}
+{"timestamp":"2025-01-15T10:30:00.000Z","level":"INFO","message":"Testing: llama-3.3-70b","correlationId":"a1b2c3d4-e5f6-7890-abcd-ef1234567890"}
 ```
 
 ### Prometheus Metrics
@@ -495,18 +495,23 @@ For true horizontal scaling of the scheduler, you would need to implement:
 
 These features are not currently implemented. For most use cases, a single server with 256MB+ RAM is sufficient to monitor all Venice models.
 
-## Key Finding: Claude Models Don't Cache
+## Key Finding: Caching Support Varies by Provider
 
-Testing reveals that **Claude models (Opus, Sonnet) do not return cached tokens** through Venice, while other models like GLM and DeepSeek show consistent caching:
+Testing reveals that caching support varies significantly across Venice's model providers:
 
-| Provider | Caching Status |
-|----------|----------------|
-| Zhipu (GLM) | ✅ Working (78-99% hit rates) |
-| DeepSeek | ✅ Working (varies) |
-| Anthropic (Claude) | ❌ Not working (0% always) |
-| OpenAI (GPT) | ⚠️ Inconsistent |
+| Provider | Models | Caching Status |
+|----------|--------|----------------|
+| Zhipu | GLM 4.6, GLM 4.7, GLM 4.6V | ✅ Excellent (78-99% hit rates) |
+| xAI | Grok 41 Fast | ✅ Working (80%+ hit rates) |
+| DeepSeek | DeepSeek V3.2 | ✅ Working (varies by request) |
+| Kimi | Kimi K2 Thinking | ✅ Working |
+| Qwen | Qwen3 series | ⚠️ Varies by model |
+| Meta | Llama 3.2, Llama 3.3 | ⚠️ Inconsistent |
+| Mistral | Mistral 31 24B | ⚠️ Inconsistent |
+| Google | Gemini 3 Pro/Flash, Gemma 3 | ⚠️ Testing needed |
+| Venice | Venice Uncensored | ❌ Not working (0% always) |
 
-Use the Cache Microscope to verify this yourself with live API calls.
+Use the Cache Microscope to verify caching behavior yourself with live API calls.
 
 ## License
 

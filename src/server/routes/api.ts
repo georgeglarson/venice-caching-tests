@@ -432,7 +432,7 @@ EOF
 /**
  * Validates a model ID format.
  * Model IDs should be alphanumeric with hyphens, dots, and underscores.
- * Examples: "llama-3.3-70b", "claude-3-5-sonnet", "deepseek-r1"
+ * Examples: "llama-3.3-70b", "deepseek-v3.2", "zai-org-glm-4.6"
  */
 function isValidModelIdFormat(modelId: string): boolean {
   // Model ID must be 1-100 characters, alphanumeric with hyphens, dots, underscores, and colons

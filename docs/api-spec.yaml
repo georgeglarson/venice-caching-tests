@@ -67,11 +67,11 @@ components:
       properties:
         model_id:
           type: string
-          example: "claude-3-5-sonnet"
+          example: "llama-3.3-70b"
         model_name:
           type: string
           nullable: true
-          example: "Claude 3.5 Sonnet"
+          example: "Llama 3.3 70B"
         total_tests:
           type: integer
           example: 25
@@ -112,7 +112,7 @@ components:
       properties:
         model_id:
           type: string
-          example: "claude-3-5-sonnet"
+          example: "zai-org-glm-4.6"
         rates:
           type: array
           items:
@@ -588,7 +588,7 @@ paths:
           description: Model ID to test
           schema:
             type: string
-            example: "claude-3-5-sonnet"
+            example: "deepseek-v3.2"
       responses:
         '200':
           description: Test result

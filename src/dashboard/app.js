@@ -984,11 +984,11 @@ async function populateMicroscopeModels() {
       model2Select.appendChild(option2);
     });
 
-    // Pre-select a broken model (like Opus) and a working one (like GLM or DeepSeek)
-    const opusModel = sortedModels.find(m => m.model_id.includes('opus'));
-    const cachingModel = sortedModels.find(m => (m.model_id.includes('glm') || m.model_id.includes('deepseek')) && m.caching_works);
+    // Pre-select a model with poor caching (like Venice Uncensored) and a working one (like GLM or DeepSeek)
+    const nonCachingModel = sortedModels.find(m => m.model_id.includes('venice-uncensored') || m.model_id.includes('opus'));
+    const cachingModel = sortedModels.find(m => (m.model_id.includes('glm') || m.model_id.includes('deepseek') || m.model_id.includes('grok')) && m.caching_works);
 
-    if (opusModel) model1Select.value = opusModel.model_id;
+    if (nonCachingModel) model1Select.value = nonCachingModel.model_id;
     if (cachingModel) model2Select.value = cachingModel.model_id;
 
   } catch (error) {
